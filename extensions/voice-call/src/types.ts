@@ -274,6 +274,8 @@ export type OutboundCallOptions = {
   message?: string;
   /** Call mode (overrides config default) */
   mode?: CallMode;
+  /** Per-call realtime config override (instructions, tools) */
+  realtimeConfig?: Record<string, unknown>;
 };
 
 // -----------------------------------------------------------------------------

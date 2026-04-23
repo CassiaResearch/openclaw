@@ -57,5 +57,6 @@ export function createVoiceCallBaseConfig(params?: {
       },
     },
     responseTimeoutMs: 30000,
+    useSubagent: false,
   };
 }

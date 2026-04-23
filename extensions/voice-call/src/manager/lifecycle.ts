@@ -8,7 +8,9 @@ type CallLifecycleContext = Pick<
   CallManagerContext,
   "activeCalls" | "providerCallIdMap" | "storePath"
 > &
-  Partial<Pick<CallManagerContext, "transcriptWaiters" | "maxDurationTimers">>;
+  Partial<
+    Pick<CallManagerContext, "transcriptWaiters" | "maxDurationTimers" | "recentlyEndedCalls">
+  >;
 
 function removeProviderCallMapping(
   providerCallIdMap: Map<string, string>,
@@ -46,6 +48,11 @@ export function finalizeCall(params: {
       call.callId,
       params.transcriptRejectReason ?? `Call ended: ${endReason}`,
     );
+  }
+
+  if (ctx.recentlyEndedCalls) {
+    ctx.recentlyEndedCalls.set(call.callId, { ...call });
+    setTimeout(() => ctx.recentlyEndedCalls?.delete(call.callId), 600_000);
   }
 
   ctx.activeCalls.delete(call.callId);

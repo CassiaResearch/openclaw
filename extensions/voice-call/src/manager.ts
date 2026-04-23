@@ -66,6 +66,7 @@ export class CallManager {
   >();
   private maxDurationTimers = new Map<CallId, NodeJS.Timeout>();
   private initialMessageInFlight = new Set<CallId>();
+  private recentlyEndedCalls = new Map<CallId, CallRecord>();
 
   constructor(config: VoiceCallConfig, storePath?: string) {
     this.config = config;
@@ -259,6 +260,7 @@ export class CallManager {
       transcriptWaiters: this.transcriptWaiters,
       maxDurationTimers: this.maxDurationTimers,
       initialMessageInFlight: this.initialMessageInFlight,
+      recentlyEndedCalls: this.recentlyEndedCalls,
       onCallAnswered: (call) => {
         this.maybeSpeakInitialMessageOnAnswered(call);
       },
@@ -319,7 +321,7 @@ export class CallManager {
    * Get an active call by ID.
    */
   getCall(callId: CallId): CallRecord | undefined {
-    return this.activeCalls.get(callId);
+    return this.activeCalls.get(callId) ?? this.recentlyEndedCalls.get(callId);
   }
 
   /**

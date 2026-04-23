@@ -149,6 +149,7 @@ export async function initiateCall(
     metadata: {
       ...(initialMessage && { initialMessage }),
       mode,
+      ...(opts.realtimeConfig && { realtimeConfig: opts.realtimeConfig }),
     },
   };
 
@@ -243,6 +244,10 @@ export async function speakInitialMessage(
 
   const initialMessage = call.metadata?.initialMessage as string | undefined;
   const mode = (call.metadata?.mode as CallMode) ?? "conversation";
+
+  if (mode === "realtime-conversation") {
+    return;
+  }
 
   if (!initialMessage) {
     console.log(`[voice-call] speakInitialMessage: no initial message for ${call.callId}`);

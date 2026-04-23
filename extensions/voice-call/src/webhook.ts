@@ -703,11 +703,6 @@ export class VoiceCallWebhookServer {
     }
 
     const params = new URLSearchParams(ctx.rawBody);
-    const direction = params.get("Direction");
-    const isInbound = !direction || direction === "inbound";
-    if (!isInbound) {
-      return false;
-    }
 
     if (ctx.query?.type === "status") {
       return false;
@@ -718,9 +713,26 @@ export class VoiceCallWebhookServer {
       return false;
     }
 
-    // Replays must return the same TwiML body so Twilio retries reconnect cleanly.
-    // The one-time token still changes, but the behavior stays identical.
-    return !params.get("SpeechResult") && !params.get("Digits");
+    if (params.get("SpeechResult") || params.get("Digits")) {
+      return false;
+    }
+
+    const direction = params.get("Direction");
+    const isInbound = !direction || direction === "inbound";
+    if (isInbound) {
+      return true;
+    }
+
+    // Outbound realtime-conversation calls also use realtime TwiML
+    const callSid = params.get("CallSid");
+    if (callSid) {
+      const call = this.manager.getCallByProviderCallId(callSid);
+      if (call?.metadata?.mode === "realtime-conversation") {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private processParsedEvents(events: NormalizedEvent[]): void {

@@ -165,8 +165,9 @@ export type WebhookSecurityConfig = z.infer<typeof VoiceCallWebhookSecurityConfi
  * Call mode determines how outbound calls behave:
  * - "notify": Deliver message and auto-hangup after delay (one-way notification)
  * - "conversation": Stay open for back-and-forth until explicit end or timeout
+ * - "realtime-conversation": Route to realtime voice provider with per-call config
  */
-export const CallModeSchema = z.enum(["notify", "conversation"]);
+export const CallModeSchema = z.enum(["notify", "conversation", "realtime-conversation"]);
 export type CallMode = z.infer<typeof CallModeSchema>;
 
 export const OutboundConfigSchema = z
@@ -369,6 +370,14 @@ export const VoiceCallConfigSchema = z
 
     /** Timeout for response generation in ms (default 30s) */
     responseTimeoutMs: z.number().int().positive().default(30000),
+
+    /**
+     * When true, injects system prompt guidance telling the agent to delegate
+     * voice calls to a subagent via sessions_spawn.  The subagent uses the
+     * blocking `monitor_call` action to wait for call completion without
+     * per-poll LLM inference cost.
+     */
+    useSubagent: z.boolean().default(false),
   })
   .strict();
 

@@ -57,6 +57,7 @@ type PendingStreamToken = {
 type CallRegistration = {
   callId: string;
   initialGreetingInstructions?: string;
+  realtimeConfig?: Record<string, unknown>;
 };
 
 type ActiveRealtimeVoiceBridge = Pick<
@@ -244,7 +245,7 @@ export class RealtimeCallHandler {
       return null;
     }
 
-    const { callId, initialGreetingInstructions } = registration;
+    const { callId, initialGreetingInstructions, realtimeConfig } = registration;
     let callEndEmitted = false;
     const emitCallEnd = (reason: "completed" | "error") => {
       if (callEndEmitted) {
@@ -257,8 +258,9 @@ export class RealtimeCallHandler {
     const bridgeRef: { current?: ActiveRealtimeVoiceBridge } = {};
     const bridge = this.realtimeProvider.createBridge({
       providerConfig: this.providerConfig,
-      instructions: this.config.instructions,
-      tools: this.config.tools,
+      instructions:
+        (realtimeConfig?.instructions as string | undefined) ?? this.config.instructions,
+      tools: (realtimeConfig?.tools as typeof this.config.tools | undefined) ?? this.config.tools,
       onAudio: (muLaw) => {
         if (ws.readyState !== WebSocket.OPEN) {
           return;
@@ -386,6 +388,9 @@ export class RealtimeCallHandler {
     }
 
     const initialGreeting = this.extractInitialGreeting(callRecord);
+    const realtimeConfig = callRecord.metadata?.realtimeConfig as
+      | Record<string, unknown>
+      | undefined;
     if (callRecord.metadata) {
       delete callRecord.metadata.initialMessage;
     }
@@ -400,9 +405,10 @@ export class RealtimeCallHandler {
     return {
       callId: callRecord.callId,
       initialGreetingInstructions: buildGreetingInstructions(
-        this.config.instructions,
+        (realtimeConfig?.instructions as string | undefined) ?? this.config.instructions,
         initialGreeting,
       ),
+      realtimeConfig,
     };
   }
 

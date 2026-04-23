@@ -26,6 +26,10 @@ vi.mock("./runtime-entry.js", () => ({
 import plugin from "./index.js";
 import { createVoiceCallRuntime } from "./runtime-entry.js";
 
+const VOICE_RUNTIME_KEY = Symbol.for("openclaw.voice.runtime");
+const VOICE_RUNTIME_PROMISE_KEY = Symbol.for("openclaw.voice.runtimePromise");
+const VOICE_RUNTIME_STOP_PROMISE_KEY = Symbol.for("openclaw.voice.runtimeStopPromise");
+
 const noopLogger = {
   info: vi.fn(),
   warn: vi.fn(),
@@ -104,6 +108,7 @@ async function registerVoiceCallCli(program: Command) {
       }),
     registerService: () => {},
     resolvePath: (p: string) => p,
+    on: () => {},
   });
 }
 
@@ -131,7 +136,12 @@ describe("voice-call plugin", () => {
     };
   });
 
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete (globalThis as Record<PropertyKey, unknown>)[VOICE_RUNTIME_KEY];
+    delete (globalThis as Record<PropertyKey, unknown>)[VOICE_RUNTIME_PROMISE_KEY];
+    delete (globalThis as Record<PropertyKey, unknown>)[VOICE_RUNTIME_STOP_PROMISE_KEY];
+  });
 
   it("initiates a call via voicecall.initiate", async () => {
     const { methods } = setup({ provider: "mock" });

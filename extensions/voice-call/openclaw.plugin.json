@@ -166,6 +166,11 @@
     "responseTimeoutMs": {
       "label": "Response Timeout (ms)",
       "advanced": true
+    },
+    "useSubagent": {
+      "label": "Use Subagent for Calls",
+      "help": "When enabled, injects prompt guidance telling the agent to delegate voice calls to a subagent via sessions_spawn.",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -709,6 +714,9 @@
       "responseTimeoutMs": {
         "type": "integer",
         "minimum": 1
+      },
+      "useSubagent": {
+        "type": "boolean"
       }
     }
   },
