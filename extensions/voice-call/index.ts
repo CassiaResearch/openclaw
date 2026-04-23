@@ -602,19 +602,50 @@ export default definePluginEntry({
       if (!config.enabled || !config.useSubagent) {
         return undefined;
       }
+      const realtimeEnabled = config.realtime.enabled;
+      const lines: string[] = [
+        "## Voice Call — Subagent Pattern",
+        "Only spawn the subagent at the moment you are ready to invoke voice_call. Do all planning, parameter gathering, and confirmation in the main agent first. Do not spawn the subagent to plan, draft, or decide on a call.",
+        "",
+        "The subagent's sole responsibility is to proxy one voice_call invocation and monitor it to completion:",
+        "1. Call voice_call with action=initiate_call using the exact parameters you pass in.",
+        "2. Take the returned callId and immediately call voice_call with action=monitor_call to block until the call reaches a terminal state.",
+        "3. Return the final call result (transcript, outcome, duration, action items) to the parent agent.",
+        "The subagent must not deviate, retry independently, re-plan, or make additional voice_call invocations beyond this proxy+monitor flow.",
+        "",
+        "When spawning via sessions_spawn, pass the subagent every voice_call initiate_call parameter it needs to forward verbatim:",
+        "- to: destination phone number in E.164 (omit to use the configured default toNumber)",
+        "- message: intro/opening message (required unless mode is realtime-conversation)",
+        "- mode: one of notify | conversation | realtime-conversation",
+        "- realtimeConfig: { instructions: string } — required when mode is realtime-conversation",
+        "",
+        "Instruct the subagent to pass these through to voice_call initiate_call unchanged, then run monitor_call with the returned callId and summarize the terminal call result.",
+      ];
+
+      if (realtimeEnabled) {
+        const defaultRealtimeInstructions =
+          typeof config.realtime.instructions === "string"
+            ? config.realtime.instructions.trim()
+            : "";
+        lines.push(
+          "",
+          "### Realtime voice is enabled",
+          'Realtime voice-to-voice is configured for this plugin. You MUST set mode="realtime-conversation" on the initiate_call the subagent forwards, and you MUST supply a complete realtimeConfig.instructions string tailored to this specific call (persona, goals, constraints, tool-use rules, hang-up conditions). Do not rely on the subagent to write or expand these instructions — compose the full realtime instructions in the parent agent and pass them through verbatim.',
+          "The message parameter is optional in realtime-conversation mode; the realtimeConfig.instructions drive the conversation.",
+        );
+        if (defaultRealtimeInstructions.length > 0) {
+          lines.push(
+            "",
+            "Default realtime instructions configured for this plugin (treat as a baseline and extend for the current call):",
+            "```",
+            defaultRealtimeInstructions,
+            "```",
+          );
+        }
+      }
+
       return {
-        appendSystemContext: [
-          "## Voice Call — Subagent Pattern",
-          "When you need to make a phone call, delegate the entire call to a subagent so you stay unblocked.",
-          "",
-          "Use sessions_spawn with a task that includes:",
-          "- Phone number (E.164), purpose, conversation goals",
-          "- Tell the subagent to use voice_call: initiate_call to start, then monitor_call with the callId to block until completion",
-          "- For interactive calls: optionally use continue_call in a loop instead of monitor_call",
-          "- Tell the subagent to include the full transcript, call outcome, duration, and action items in its summary",
-          "",
-          "The subagent auto-announces the result back to you when done.",
-        ].join("\n"),
+        appendSystemContext: lines.join("\n"),
       };
     });
 
