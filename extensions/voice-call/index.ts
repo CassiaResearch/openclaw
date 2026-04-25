@@ -1,6 +1,6 @@
-import { Type } from "@sinclair/typebox";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
+import { Type } from "typebox";
 import {
   definePluginEntry,
   type GatewayRequestHandlerOptions,
@@ -83,6 +83,11 @@ const voiceCallConfigSchema = {
     },
     "realtime.streamPath": { label: "Realtime Stream Path", advanced: true },
     "realtime.instructions": { label: "Realtime Instructions", advanced: true },
+    "realtime.toolPolicy": {
+      label: "Realtime Tool Policy",
+      help: "Controls the shared openclaw_agent_consult tool.",
+      advanced: true,
+    },
     "realtime.providers": { label: "Realtime Provider Config", advanced: true },
     "tts.provider": {
       label: "TTS Provider Override",
@@ -110,14 +115,8 @@ const VoiceCallToolSchema = Type.Union([
   Type.Object({
     action: Type.Literal("initiate_call"),
     to: Type.Optional(Type.String({ description: "Call target" })),
-    message: Type.Optional(Type.String({ description: "Intro message" })),
-    mode: Type.Optional(
-      Type.Union([
-        Type.Literal("notify"),
-        Type.Literal("conversation"),
-        Type.Literal("realtime-conversation"),
-      ]),
-    ),
+    message: Type.String({ description: "Intro message" }),
+    mode: Type.Optional(Type.Union([Type.Literal("notify"), Type.Literal("conversation")])),
     realtimeConfig: Type.Optional(
       Type.Object({
         instructions: Type.String({
@@ -135,6 +134,11 @@ const VoiceCallToolSchema = Type.Union([
     action: Type.Literal("speak_to_user"),
     callId: Type.String({ description: "Call ID" }),
     message: Type.String({ description: "Message to speak" }),
+  }),
+  Type.Object({
+    action: Type.Literal("send_dtmf"),
+    callId: Type.String({ description: "Call ID" }),
+    digits: Type.String({ description: "DTMF digits to send" }),
   }),
   Type.Object({
     action: Type.Literal("end_call"),
@@ -155,6 +159,12 @@ const VoiceCallToolSchema = Type.Union([
     message: Type.Optional(Type.String({ description: "Optional intro message" })),
   }),
 ]);
+
+function asParamRecord(params: unknown): Record<string, unknown> {
+  return params && typeof params === "object" && !Array.isArray(params)
+    ? (params as Record<string, unknown>)
+    : {};
+}
 
 export default definePluginEntry({
   id: "voice-call",
@@ -271,7 +281,7 @@ export default definePluginEntry({
       respond: GatewayRequestHandlerOptions["respond"];
       to: string;
       message?: string;
-      mode?: "notify" | "conversation" | "realtime-conversation";
+      mode?: "notify" | "conversation";
       realtimeConfig?: Record<string, unknown>;
     }) => {
       const result = await params.rt.manager.initiateCall(params.to, undefined, {
@@ -322,13 +332,9 @@ export default definePluginEntry({
       async ({ params, respond }: GatewayRequestHandlerOptions) => {
         try {
           const mode =
-            params?.mode === "notify" ||
-            params?.mode === "conversation" ||
-            params?.mode === "realtime-conversation"
-              ? params.mode
-              : undefined;
+            params?.mode === "notify" || params?.mode === "conversation" ? params.mode : undefined;
           const message = normalizeOptionalString(params?.message) ?? "";
-          if (!message && mode !== "realtime-conversation") {
+          if (!message) {
             respond(false, { error: "message required" });
             return;
           }
@@ -342,7 +348,7 @@ export default definePluginEntry({
             rt,
             respond,
             to,
-            message: message || undefined,
+            message,
             mode,
             realtimeConfig: params?.realtimeConfig as Record<string, unknown> | undefined,
           });
@@ -379,6 +385,29 @@ export default definePluginEntry({
             action: (request) => request.rt.manager.speak(request.callId, request.message),
             failure: "speak failed",
           });
+        } catch (err) {
+          sendError(respond, err);
+        }
+      },
+    );
+
+    api.registerGatewayMethod(
+      "voicecall.dtmf",
+      async ({ params, respond }: GatewayRequestHandlerOptions) => {
+        try {
+          const callId = normalizeOptionalString(params?.callId) ?? "";
+          const digits = normalizeOptionalString(params?.digits) ?? "";
+          if (!callId || !digits) {
+            respond(false, { error: "callId and digits required" });
+            return;
+          }
+          const rt = await ensureRuntime();
+          const result = await rt.manager.sendDtmf(callId, digits);
+          if (!result.success) {
+            respond(false, { error: result.error || "dtmf failed" });
+            return;
+          }
+          respond(true, { success: true });
         } catch (err) {
           sendError(respond, err);
         }
@@ -459,6 +488,7 @@ export default definePluginEntry({
       description: "Make phone calls and have voice conversations via the voice-call plugin.",
       parameters: VoiceCallToolSchema,
       async execute(_toolCallId, params) {
+        const rawParams = asParamRecord(params);
         const json = (payload: unknown) => ({
           content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
           details: payload,
@@ -467,27 +497,24 @@ export default definePluginEntry({
         try {
           const rt = await ensureRuntime();
 
-          if (typeof params?.action === "string") {
-            switch (params.action) {
+          if (typeof rawParams.action === "string") {
+            switch (rawParams.action) {
               case "initiate_call": {
-                const mode =
-                  params.mode === "notify" ||
-                  params.mode === "conversation" ||
-                  params.mode === "realtime-conversation"
-                    ? params.mode
-                    : undefined;
-                const message = normalizeOptionalString(params.message) ?? "";
-                if (!message && mode !== "realtime-conversation") {
+                const message = normalizeOptionalString(rawParams.message) ?? "";
+                if (!message) {
                   throw new Error("message required");
                 }
-                const to = normalizeOptionalString(params.to) ?? rt.config.toNumber;
+                const to = normalizeOptionalString(rawParams.to) ?? rt.config.toNumber;
                 if (!to) {
                   throw new Error("to required");
                 }
                 const result = await rt.manager.initiateCall(to, undefined, {
-                  message: message || undefined,
-                  mode,
-                  realtimeConfig: params.realtimeConfig as Record<string, unknown> | undefined,
+                  message,
+                  mode:
+                    rawParams.mode === "notify" || rawParams.mode === "conversation"
+                      ? rawParams.mode
+                      : undefined,
+                  realtimeConfig: rawParams.realtimeConfig as Record<string, unknown> | undefined,
                 });
                 if (!result.success) {
                   throw new Error(result.error || "initiate failed");
@@ -495,8 +522,8 @@ export default definePluginEntry({
                 return json({ callId: result.callId, initiated: true });
               }
               case "continue_call": {
-                const callId = normalizeOptionalString(params.callId) ?? "";
-                const message = normalizeOptionalString(params.message) ?? "";
+                const callId = normalizeOptionalString(rawParams.callId) ?? "";
+                const message = normalizeOptionalString(rawParams.message) ?? "";
                 if (!callId || !message) {
                   throw new Error("callId and message required");
                 }
@@ -507,8 +534,8 @@ export default definePluginEntry({
                 return json({ success: true, transcript: result.transcript });
               }
               case "speak_to_user": {
-                const callId = normalizeOptionalString(params.callId) ?? "";
-                const message = normalizeOptionalString(params.message) ?? "";
+                const callId = normalizeOptionalString(rawParams.callId) ?? "";
+                const message = normalizeOptionalString(rawParams.message) ?? "";
                 if (!callId || !message) {
                   throw new Error("callId and message required");
                 }
@@ -518,8 +545,20 @@ export default definePluginEntry({
                 }
                 return json({ success: true });
               }
+              case "send_dtmf": {
+                const callId = normalizeOptionalString(rawParams.callId) ?? "";
+                const digits = normalizeOptionalString(rawParams.digits) ?? "";
+                if (!callId || !digits) {
+                  throw new Error("callId and digits required");
+                }
+                const result = await rt.manager.sendDtmf(callId, digits);
+                if (!result.success) {
+                  throw new Error(result.error || "dtmf failed");
+                }
+                return json({ success: true });
+              }
               case "end_call": {
-                const callId = normalizeOptionalString(params.callId) ?? "";
+                const callId = normalizeOptionalString(rawParams.callId) ?? "";
                 if (!callId) {
                   throw new Error("callId required");
                 }
@@ -530,7 +569,7 @@ export default definePluginEntry({
                 return json({ success: true });
               }
               case "get_status": {
-                const callId = normalizeOptionalString(params.callId) ?? "";
+                const callId = normalizeOptionalString(rawParams.callId) ?? "";
                 if (!callId) {
                   throw new Error("callId required");
                 }
@@ -539,7 +578,7 @@ export default definePluginEntry({
                 return json(call ? { found: true, call } : { found: false });
               }
               case "monitor_call": {
-                const callId = normalizeOptionalString(params.callId) ?? "";
+                const callId = normalizeOptionalString(rawParams.callId) ?? "";
                 if (!callId) {
                   throw new Error("callId required");
                 }
@@ -569,9 +608,9 @@ export default definePluginEntry({
             }
           }
 
-          const mode = params?.mode ?? "call";
+          const mode = rawParams.mode ?? "call";
           if (mode === "status") {
-            const sid = normalizeOptionalString(params.sid) ?? "";
+            const sid = normalizeOptionalString(rawParams.sid) ?? "";
             if (!sid) {
               throw new Error("sid required for status");
             }
@@ -579,12 +618,12 @@ export default definePluginEntry({
             return json(call ? { found: true, call } : { found: false });
           }
 
-          const to = normalizeOptionalString(params.to) ?? rt.config.toNumber;
+          const to = normalizeOptionalString(rawParams.to) ?? rt.config.toNumber;
           if (!to) {
             throw new Error("to required for call");
           }
           const result = await rt.manager.initiateCall(to, undefined, {
-            message: normalizeOptionalString(params.message),
+            message: normalizeOptionalString(rawParams.message),
           });
           if (!result.success) {
             throw new Error(result.error || "initiate failed");
@@ -615,9 +654,9 @@ export default definePluginEntry({
         "",
         "When spawning via sessions_spawn, pass the subagent every voice_call initiate_call parameter it needs to forward verbatim:",
         "- to: destination phone number in E.164 (omit to use the configured default toNumber)",
-        "- message: intro/opening message (required unless mode is realtime-conversation)",
-        "- mode: one of notify | conversation | realtime-conversation",
-        "- realtimeConfig: { instructions: string } — required when mode is realtime-conversation",
+        "- message: intro/opening message",
+        "- mode: one of notify | conversation",
+        "- realtimeConfig: { instructions: string } — optional override for the realtime voice instructions on this call",
         "",
         "Instruct the subagent to pass these through to voice_call initiate_call unchanged, then run monitor_call with the returned callId and summarize the terminal call result.",
       ];
@@ -630,13 +669,12 @@ export default definePluginEntry({
         lines.push(
           "",
           "### Realtime voice is enabled",
-          'Realtime voice-to-voice is configured for this plugin. You MUST set mode="realtime-conversation" on the initiate_call the subagent forwards, and you MUST supply a complete realtimeConfig.instructions string tailored to this specific call (persona, goals, constraints, tool-use rules, hang-up conditions). Do not rely on the subagent to write or expand these instructions — compose the full realtime instructions in the parent agent and pass them through verbatim.',
-          "The message parameter is optional in realtime-conversation mode; the realtimeConfig.instructions drive the conversation.",
+          "Realtime voice-to-voice is configured for this plugin. When you want to override the configured realtime instructions for this specific call (persona, goals, constraints, tool-use rules, hang-up conditions), supply a complete realtimeConfig.instructions string and pass it through verbatim. Do not rely on the subagent to write or expand these instructions — compose the full realtime instructions in the parent agent.",
         );
         if (defaultRealtimeInstructions.length > 0) {
           lines.push(
             "",
-            "Default realtime instructions configured for this plugin (treat as a baseline and extend for the current call):",
+            "Default realtime instructions configured for this plugin (treat as a baseline if you choose to override; otherwise the plugin uses these as-is):",
             "```",
             defaultRealtimeInstructions,
             "```",
