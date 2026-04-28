@@ -47,6 +47,64 @@ vi.mock("./doctor/shared/channel-legacy-config-migrate.js", () => ({
   }),
 }));
 
+vi.mock("../secrets/target-registry.js", () => {
+  const entry = {
+    id: "channels.discord.token",
+    targetType: "channels.discord.token",
+    configFile: "openclaw.json",
+    pathPattern: "channels.discord.token",
+    secretShape: "secret_input",
+    expectedResolvedValue: "string",
+    includeInPlan: true,
+    includeInConfigure: true,
+    includeInAudit: true,
+  };
+
+  const readRecord = (value: unknown): Record<string, unknown> | null =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+
+  return {
+    discoverConfigSecretTargets: (cfg: OpenClawConfig) => {
+      const targets: Array<{
+        entry: typeof entry;
+        path: string;
+        pathSegments: string[];
+        value: unknown;
+        accountId?: string;
+      }> = [];
+      const channels = readRecord(cfg.channels);
+      const discord = readRecord(channels?.discord);
+      if (!discord) {
+        return targets;
+      }
+      targets.push({
+        entry,
+        path: "channels.discord.token",
+        pathSegments: ["channels", "discord", "token"],
+        value: discord.token,
+      });
+
+      const accounts = readRecord(discord.accounts);
+      for (const [accountId, accountConfig] of Object.entries(accounts ?? {})) {
+        const account = readRecord(accountConfig);
+        if (!account) {
+          continue;
+        }
+        targets.push({
+          entry,
+          path: `channels.discord.accounts.${accountId}.token`,
+          pathSegments: ["channels", "discord", "accounts", accountId, "token"],
+          value: account.token,
+          accountId,
+        });
+      }
+      return targets;
+    },
+  };
+});
+
 describe("normalizeCompatibilityConfigValues", () => {
   let previousOauthDir: string | undefined;
   let tempOauthDir = "";
@@ -113,6 +171,57 @@ describe("normalizeCompatibilityConfigValues", () => {
       const credsDir = path.join(tempOauthDir ?? "", "whatsapp", "work");
       writeCreds(credsDir);
     });
+  });
+
+  it("migrates legacy secretref-env markers on SecretRef credential paths", () => {
+    const res = normalizeCompatibilityConfigValues({
+      secrets: {
+        defaults: {
+          env: "gateway-env",
+        },
+      },
+      channels: {
+        discord: {
+          token: "secretref-env:DISCORD_BOT_TOKEN",
+          accounts: {
+            work: {
+              token: "secretref-env:DISCORD_WORK_TOKEN",
+            },
+          },
+        },
+      },
+    } as unknown as OpenClawConfig);
+
+    expect(res.config.channels?.discord?.token).toBeUndefined();
+    expect(res.config.channels?.discord?.accounts?.default?.token).toEqual({
+      source: "env",
+      provider: "gateway-env",
+      id: "DISCORD_BOT_TOKEN",
+    });
+    expect(res.config.channels?.discord?.accounts?.work?.token).toEqual({
+      source: "env",
+      provider: "gateway-env",
+      id: "DISCORD_WORK_TOKEN",
+    });
+    expect(res.changes).toContain(
+      "Moved channels.discord.accounts.default.token secretref-env:DISCORD_BOT_TOKEN marker → structured env SecretRef.",
+    );
+    expect(res.changes).toContain(
+      "Moved channels.discord.accounts.work.token secretref-env:DISCORD_WORK_TOKEN marker → structured env SecretRef.",
+    );
+  });
+
+  it("leaves invalid legacy secretref-env markers for validation to reject", () => {
+    const res = normalizeCompatibilityConfigValues({
+      channels: {
+        discord: {
+          token: "secretref-env:not-valid",
+        },
+      },
+    } as unknown as OpenClawConfig);
+
+    expect(res.config.channels?.discord?.token).toBe("secretref-env:not-valid");
+    expect(res.changes).toEqual([]);
   });
 
   it("moves WhatsApp access defaults into accounts.default for named accounts", () => {
@@ -233,6 +342,40 @@ describe("normalizeCompatibilityConfigValues", () => {
     );
   });
 
+  it("migrates legacy OpenAI provider api values to OpenAI completions", () => {
+    const res = normalizeCompatibilityConfigValues({
+      models: {
+        providers: {
+          openrouter: {
+            baseUrl: "https://openrouter.ai/api/v1",
+            api: "openai",
+            models: [
+              {
+                id: "openai/gpt-4o-mini",
+                name: "OpenRouter GPT-4o Mini",
+                api: "openai",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 128_000,
+                maxTokens: 16_384,
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig);
+
+    expect(res.config.models?.providers?.openrouter?.api).toBe("openai-completions");
+    expect(res.config.models?.providers?.openrouter?.models?.[0]?.api).toBe("openai-completions");
+    expect(res.changes).toContain(
+      'Moved models.providers.openrouter.api "openai" → "openai-completions".',
+    );
+    expect(res.changes).toContain(
+      'Moved models.providers.openrouter.models[0].api "openai" → "openai-completions".',
+    );
+  });
+
   it("marks legacy untagged /models add OpenAI Codex metadata rows for doctor repair", () => {
     const res = normalizeCompatibilityConfigValues({
       models: {
@@ -318,11 +461,11 @@ describe("normalizeCompatibilityConfigValues", () => {
     expect(res.changes).toEqual([]);
   });
 
-  it("migrates legacy Codex primary refs to OpenAI refs plus explicit Codex harness", () => {
+  it("migrates legacy Codex primary refs to OpenAI refs plus explicit Codex runtime", () => {
     const res = normalizeCompatibilityConfigValues({
       agents: {
         defaults: {
-          embeddedHarness: { runtime: "auto", fallback: "pi" },
+          agentRuntime: { id: "auto", fallback: "pi" },
           model: {
             primary: "codex/gpt-5.5",
             fallbacks: ["anthropic/claude-sonnet-4-6", "codex/gpt-5.4-mini"],
@@ -346,8 +489,8 @@ describe("normalizeCompatibilityConfigValues", () => {
       primary: "openai/gpt-5.5",
       fallbacks: ["anthropic/claude-sonnet-4-6", "openai/gpt-5.4-mini"],
     });
-    expect(res.config.agents?.defaults?.embeddedHarness).toEqual({
-      runtime: "codex",
+    expect(res.config.agents?.defaults?.agentRuntime).toEqual({
+      id: "codex",
       fallback: "pi",
     });
     expect(res.config.agents?.defaults?.models).toEqual({
@@ -356,7 +499,7 @@ describe("normalizeCompatibilityConfigValues", () => {
     });
     expect(res.config.agents?.list?.[0]).toMatchObject({
       id: "reviewer",
-      embeddedHarness: { runtime: "codex" },
+      agentRuntime: { id: "codex" },
       model: "openai/gpt-5.4-mini",
     });
     expect(res.changes).toEqual(
@@ -409,7 +552,7 @@ describe("normalizeCompatibilityConfigValues", () => {
       primary: "anthropic/claude-opus-4-7",
       fallbacks: ["anthropic/claude-sonnet-4-6"],
     });
-    expect(res.config.agents?.defaults?.embeddedHarness).toEqual({ runtime: "claude-cli" });
+    expect(res.config.agents?.defaults?.agentRuntime).toEqual({ id: "claude-cli" });
     expect(res.config.agents?.defaults?.models).toEqual({
       "anthropic/claude-opus-4-7": { alias: "Anthropic Opus" },
     });
@@ -435,7 +578,7 @@ describe("normalizeCompatibilityConfigValues", () => {
       primary: "openai/gpt-5.5",
       fallbacks: ["openai/gpt-5.4-mini"],
     });
-    expect(res.config.agents?.defaults?.embeddedHarness).toEqual({ runtime: "codex-cli" });
+    expect(res.config.agents?.defaults?.agentRuntime).toEqual({ id: "codex-cli" });
     expect(res.config.agents?.defaults?.models).toEqual({
       "openai/gpt-5.5": { alias: "OpenAI GPT" },
     });
@@ -461,8 +604,8 @@ describe("normalizeCompatibilityConfigValues", () => {
       primary: "google/gemini-3.1-pro-preview",
       fallbacks: ["google/gemini-3-flash-preview"],
     });
-    expect(res.config.agents?.defaults?.embeddedHarness).toEqual({
-      runtime: "google-gemini-cli",
+    expect(res.config.agents?.defaults?.agentRuntime).toEqual({
+      id: "google-gemini-cli",
     });
     expect(res.config.agents?.defaults?.models).toEqual({
       "google/gemini-3.1-pro-preview": { alias: "Gemini API" },

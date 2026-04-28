@@ -1,11 +1,14 @@
 import { Command } from "commander";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createTestPluginApi } from "../../test/helpers/plugins/plugin-api.ts";
-import plugin from "./index.js";
+import plugin, { __testing as googleMeetPluginTesting } from "./index.js";
 import { registerGoogleMeetCli } from "./src/cli.js";
 import { resolveGoogleMeetConfig } from "./src/config.js";
 import type { GoogleMeetRuntime } from "./src/runtime.js";
+import {
+  captureStdout,
+  invokeGoogleMeetGatewayMethodForTest,
+  setupGoogleMeetPlugin,
+} from "./src/test-support/plugin-harness.js";
 import { CREATE_MEET_FROM_BROWSER_SCRIPT } from "./src/transports/chrome-create.js";
 
 const voiceCallMocks = vi.hoisted(() => ({
@@ -37,23 +40,19 @@ vi.mock("./src/voice-call-gateway.js", () => ({
   endMeetVoiceCallGatewayCall: voiceCallMocks.endMeetVoiceCallGatewayCall,
 }));
 
-const noopLogger = {
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-  debug: vi.fn(),
-};
-
-function captureStdout() {
-  let output = "";
-  const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
-    output += String(chunk);
-    return true;
-  }) as typeof process.stdout.write);
-  return {
-    output: () => output,
-    restore: () => writeSpy.mockRestore(),
-  };
+function setup(
+  config?: Parameters<typeof setupGoogleMeetPlugin>[1],
+  options?: Parameters<typeof setupGoogleMeetPlugin>[2],
+) {
+  const harness = setupGoogleMeetPlugin(plugin, config, options);
+  googleMeetPluginTesting.setCallGatewayFromCliForTests(
+    async (method, _opts, params) =>
+      (await invokeGoogleMeetGatewayMethodForTest(harness.methods, method, params)) as Record<
+        string,
+        unknown
+      >,
+  );
+  return harness;
 }
 
 async function runCreateMeetBrowserScript(params: { buttonText: string }) {
@@ -89,90 +88,6 @@ async function runCreateMeetBrowserScript(params: { buttonText: string }) {
   return { button, result: await fn() };
 }
 
-function setup(
-  config: Record<string, unknown> = {},
-  options: {
-    nodesInvokeHandler?: (params: {
-      nodeId: string;
-      command: string;
-      params?: unknown;
-      timeoutMs?: number;
-    }) => Promise<unknown>;
-  } = {},
-) {
-  const methods = new Map<string, unknown>();
-  const tools: unknown[] = [];
-  const nodesList = vi.fn(async () => ({
-    nodes: [
-      {
-        nodeId: "node-1",
-        displayName: "parallels-macos",
-        connected: true,
-        caps: ["browser"],
-        commands: ["browser.proxy", "googlemeet.chrome"],
-      },
-    ],
-  }));
-  const nodesInvoke = vi.fn(async (params) => {
-    if (options.nodesInvokeHandler) {
-      return options.nodesInvokeHandler(params);
-    }
-    if (params.command === "browser.proxy") {
-      const proxy = params.params as { path?: string; body?: { url?: string; targetId?: string } };
-      if (proxy.path === "/tabs") {
-        return { payload: { result: { running: true, tabs: [] } } };
-      }
-      if (proxy.path === "/tabs/open") {
-        return {
-          payload: {
-            result: {
-              targetId: "tab-1",
-              title: "Meet",
-              url: proxy.body?.url ?? "https://meet.google.com/abc-defg-hij",
-            },
-          },
-        };
-      }
-      return { payload: { result: { ok: true } } };
-    }
-    return { payload: { launched: true } };
-  });
-  const runCommandWithTimeout = vi.fn(async (argv: string[]) => {
-    if (argv[0] === "/usr/sbin/system_profiler") {
-      return { code: 0, stdout: "BlackHole 2ch", stderr: "" };
-    }
-    return { code: 0, stdout: "", stderr: "" };
-  });
-  const api = createTestPluginApi({
-    id: "google-meet",
-    name: "Google Meet",
-    description: "test",
-    version: "0",
-    source: "test",
-    config: {},
-    pluginConfig: config,
-    runtime: {
-      system: {
-        runCommandWithTimeout,
-        formatNativeDependencyHint: vi.fn(() => "Install with brew install blackhole-2ch."),
-      },
-      nodes: {
-        list: nodesList,
-        invoke: nodesInvoke,
-      },
-    } as unknown as OpenClawPluginApi["runtime"],
-    logger: noopLogger,
-    registerGatewayMethod: (method: string, handler: unknown) => methods.set(method, handler),
-    registerTool: (tool: unknown) => tools.push(tool),
-  });
-  plugin.register(api);
-  return {
-    methods,
-    tools,
-    nodesInvoke,
-  };
-}
-
 describe("google-meet create flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -180,6 +95,7 @@ describe("google-meet create flow", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    googleMeetPluginTesting.setCallGatewayFromCliForTests();
   });
 
   it("CLI create prints the new meeting URL", async () => {
@@ -294,6 +210,80 @@ describe("google-meet create flow", () => {
     );
   });
 
+  it("reports structured manual action when browser creation needs Google login", async () => {
+    const { methods } = setup(
+      {
+        defaultTransport: "chrome-node",
+        chromeNode: { node: "parallels-macos" },
+      },
+      {
+        nodesInvokeHandler: async (params) => {
+          const proxy = params.params as { path?: string; body?: { url?: string } };
+          if (proxy.path === "/tabs") {
+            return { payload: { result: { tabs: [] } } };
+          }
+          if (proxy.path === "/tabs/open") {
+            return {
+              payload: {
+                result: {
+                  targetId: "login-tab",
+                  title: "New Tab",
+                  url: proxy.body?.url,
+                },
+              },
+            };
+          }
+          if (proxy.path === "/act") {
+            return {
+              payload: {
+                result: {
+                  ok: true,
+                  targetId: "login-tab",
+                  result: {
+                    manualActionReason: "google-login-required",
+                    manualAction:
+                      "Sign in to Google in the OpenClaw browser profile, then retry meeting creation.",
+                    browserUrl: "https://accounts.google.com/signin",
+                    browserTitle: "Sign in - Google Accounts",
+                    notes: ["Sign-in page detected."],
+                  },
+                },
+              },
+            };
+          }
+          throw new Error(`unexpected browser proxy path ${proxy.path}`);
+        },
+      },
+    );
+    const handler = methods.get("googlemeet.create") as
+      | ((ctx: {
+          params: Record<string, unknown>;
+          respond: ReturnType<typeof vi.fn>;
+        }) => Promise<void>)
+      | undefined;
+    const respond = vi.fn();
+
+    await handler?.({ params: {}, respond });
+
+    expect(respond.mock.calls[0]?.[0]).toBe(false);
+    expect(respond.mock.calls[0]?.[1]).toMatchObject({
+      source: "browser",
+      error:
+        "google-login-required: Sign in to Google in the OpenClaw browser profile, then retry meeting creation.",
+      manualActionRequired: true,
+      manualActionReason: "google-login-required",
+      manualActionMessage:
+        "Sign in to Google in the OpenClaw browser profile, then retry meeting creation.",
+      browser: {
+        nodeId: "node-1",
+        targetId: "login-tab",
+        browserUrl: "https://accounts.google.com/signin",
+        browserTitle: "Sign in - Google Accounts",
+        notes: ["Sign-in page detected."],
+      },
+    });
+  });
+
   it("creates and joins a Meet through the create tool action by default", async () => {
     const { tools, nodesInvoke } = setup(
       {
@@ -387,6 +377,71 @@ describe("google-meet create flow", () => {
         }),
       }),
     );
+  });
+
+  it("returns structured manual action from the create tool action", async () => {
+    const { tools } = setup(
+      {
+        defaultTransport: "chrome-node",
+        chromeNode: { node: "parallels-macos" },
+      },
+      {
+        nodesInvokeHandler: async (params) => {
+          const proxy = params.params as { path?: string; body?: { url?: string } };
+          if (proxy.path === "/tabs") {
+            return { payload: { result: { tabs: [] } } };
+          }
+          if (proxy.path === "/tabs/open") {
+            return {
+              payload: {
+                result: {
+                  targetId: "permission-tab",
+                  title: "Meet",
+                  url: proxy.body?.url,
+                },
+              },
+            };
+          }
+          if (proxy.path === "/act") {
+            return {
+              payload: {
+                result: {
+                  ok: true,
+                  targetId: "permission-tab",
+                  result: {
+                    manualActionReason: "meet-permission-required",
+                    manualAction:
+                      "Allow microphone/camera permissions for Meet in the OpenClaw browser profile, then retry meeting creation.",
+                    browserUrl: "https://meet.google.com/new",
+                    browserTitle: "Meet",
+                  },
+                },
+              },
+            };
+          }
+          throw new Error(`unexpected browser proxy path ${proxy.path}`);
+        },
+      },
+    );
+    const tool = tools[0] as {
+      execute: (id: string, params: unknown) => Promise<{ details: Record<string, unknown> }>;
+    };
+
+    const result = await tool.execute("id", { action: "create" });
+
+    expect(result.details).toMatchObject({
+      source: "browser",
+      manualActionRequired: true,
+      manualActionReason: "meet-permission-required",
+      manualActionMessage:
+        "Allow microphone/camera permissions for Meet in the OpenClaw browser profile, then retry meeting creation.",
+      browser: {
+        nodeId: "node-1",
+        targetId: "permission-tab",
+        browserUrl: "https://meet.google.com/new",
+        browserTitle: "Meet",
+      },
+    });
   });
 
   it("reuses an existing browser create tab instead of opening duplicates", async () => {

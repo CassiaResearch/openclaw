@@ -1,10 +1,8 @@
 import { normalizeProviderId } from "../../agents/provider-id.js";
 import { normalizeLowercaseStringOrEmpty } from "../../shared/string-coerce.js";
 import { loadBundledCapabilityRuntimeRegistry } from "../bundled-capability-runtime.js";
-import {
-  loadPluginManifestRegistry,
-  resolveManifestContractPluginIds,
-} from "../manifest-registry.js";
+import { loadPluginManifestRegistry } from "../manifest-registry.js";
+import { resolveManifestContractPluginIds } from "../plugin-registry.js";
 import { resolveBundledExplicitProviderContractsFromPublicArtifacts } from "../provider-contract-public-artifacts.js";
 import type {
   ImageGenerationProviderPlugin,
@@ -71,9 +69,21 @@ type ManifestContractKey =
   | "webContentExtractors"
   | "webFetchProviders"
   | "webSearchProviders"
+  | "migrationProviders"
   | "tools";
 
 type ManifestRegistryContractKey = "webFetchProviders" | "webSearchProviders";
+
+function normalizeProviderAuthEnvVars(
+  providerAuthEnvVars: Record<string, string[]> | undefined,
+): Record<string, string[]> {
+  return Object.fromEntries(
+    Object.entries(providerAuthEnvVars ?? {}).map(([providerId, envVars]) => [
+      providerId,
+      uniqueStrings(envVars),
+    ]),
+  );
+}
 
 function resolveBundledManifestContracts(): PluginRegistrationContractEntry[] {
   if (process.env.VITEST) {
@@ -81,6 +91,7 @@ function resolveBundledManifestContracts(): PluginRegistrationContractEntry[] {
       pluginId: entry.pluginId,
       cliBackendIds: [...entry.cliBackendIds],
       providerIds: [...entry.providerIds],
+      providerAuthEnvVars: normalizeProviderAuthEnvVars(entry.providerAuthEnvVars),
       speechProviderIds: [...entry.speechProviderIds],
       realtimeTranscriptionProviderIds: [...entry.realtimeTranscriptionProviderIds],
       realtimeVoiceProviderIds: [...entry.realtimeVoiceProviderIds],
@@ -92,6 +103,7 @@ function resolveBundledManifestContracts(): PluginRegistrationContractEntry[] {
       webContentExtractorIds: [...entry.webContentExtractorIds],
       webFetchProviderIds: [...entry.webFetchProviderIds],
       webSearchProviderIds: [...entry.webSearchProviderIds],
+      migrationProviderIds: [...entry.migrationProviderIds],
       toolNames: [...entry.toolNames],
     }));
   }
@@ -112,12 +124,14 @@ function resolveBundledManifestContracts(): PluginRegistrationContractEntry[] {
           (plugin.contracts?.webContentExtractors?.length ?? 0) > 0 ||
           (plugin.contracts?.webFetchProviders?.length ?? 0) > 0 ||
           (plugin.contracts?.webSearchProviders?.length ?? 0) > 0 ||
+          (plugin.contracts?.migrationProviders?.length ?? 0) > 0 ||
           (plugin.contracts?.tools?.length ?? 0) > 0),
     )
     .map((plugin) => ({
       pluginId: plugin.id,
       cliBackendIds: uniqueStrings(plugin.cliBackends),
       providerIds: uniqueStrings(plugin.providers),
+      providerAuthEnvVars: normalizeProviderAuthEnvVars(plugin.providerAuthEnvVars),
       speechProviderIds: uniqueStrings(plugin.contracts?.speechProviders ?? []),
       realtimeTranscriptionProviderIds: uniqueStrings(
         plugin.contracts?.realtimeTranscriptionProviders ?? [],
@@ -133,6 +147,7 @@ function resolveBundledManifestContracts(): PluginRegistrationContractEntry[] {
       webContentExtractorIds: uniqueStrings(plugin.contracts?.webContentExtractors ?? []),
       webFetchProviderIds: uniqueStrings(plugin.contracts?.webFetchProviders ?? []),
       webSearchProviderIds: uniqueStrings(plugin.contracts?.webSearchProviders ?? []),
+      migrationProviderIds: uniqueStrings(plugin.contracts?.migrationProviders ?? []),
       toolNames: uniqueStrings(plugin.contracts?.tools ?? []),
     }));
 }
@@ -193,6 +208,8 @@ function resolveBundledManifestPluginIdsForContract(contract: ManifestContractKe
             return entry.webFetchProviderIds.length > 0;
           case "webSearchProviders":
             return entry.webSearchProviderIds.length > 0;
+          case "migrationProviders":
+            return entry.migrationProviderIds.length > 0;
           case "tools":
             return entry.toolNames.length > 0;
         }

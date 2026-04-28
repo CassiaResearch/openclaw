@@ -13,7 +13,7 @@ Gemini Grounding.
 - Provider: `google`
 - Auth: `GEMINI_API_KEY` or `GOOGLE_API_KEY`
 - API: Google Gemini API
-- Runtime option: `agents.defaults.embeddedHarness.runtime: "google-gemini-cli"`
+- Runtime option: `agents.defaults.agentRuntime.id: "google-gemini-cli"`
   reuses Gemini CLI OAuth while keeping model refs canonical as `google/*`.
 
 ## Getting started
@@ -148,6 +148,11 @@ Gemini 3, Gemini 3.1, and `gemini-*-latest` alias reasoning controls to
 `thinkingLevel` so default/low-latency runs do not send disabled
 `thinkingBudget` values.
 
+`/think adaptive` keeps Google's dynamic thinking semantics instead of choosing
+a fixed OpenClaw level. Gemini 3 and Gemini 3.1 omit a fixed `thinkingLevel` so
+Google can choose the level; Gemini 2.5 sends Google's dynamic sentinel
+`thinkingBudget: -1`.
+
 Gemma 4 models (for example `gemma-4-26b-a4b-it`) support thinking mode. OpenClaw
 rewrites `thinkingBudget` to a supported Google `thinkingLevel` for Gemma 4.
 Setting thinking to `off` preserves thinking disabled instead of mapping to
@@ -247,8 +252,8 @@ The bundled `google` speech provider uses the Gemini API TTS path with
 
 - Default voice: `Kore`
 - Auth: `messages.tts.providers.google.apiKey`, `models.providers.google.apiKey`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY`
-- Output: WAV for regular TTS attachments, PCM for Talk/telephony
-- Native voice-note output: not supported on this Gemini API path because the API returns PCM rather than Opus
+- Output: WAV for regular TTS attachments, Opus for voice-note targets, PCM for Talk/telephony
+- Voice-note output: Google PCM is wrapped as WAV and transcoded to 48 kHz Opus with `ffmpeg`
 
 To use Google as the default TTS provider:
 
@@ -262,6 +267,7 @@ To use Google as the default TTS provider:
         google: {
           model: "gemini-3.1-flash-tts-preview",
           voiceName: "Kore",
+          audioProfile: "Speak professionally with a calm tone.",
         },
       },
     },
@@ -269,9 +275,14 @@ To use Google as the default TTS provider:
 }
 ```
 
-Gemini API TTS accepts expressive square-bracket audio tags in the text, such as
-`[whispers]` or `[laughs]`. To keep tags out of the visible chat reply while
-sending them to TTS, put them inside a `[[tts:text]]...[[/tts:text]]` block:
+Gemini API TTS uses natural-language prompting for style control. Set
+`audioProfile` to prepend a reusable style prompt before the spoken text. Set
+`speakerName` when your prompt text refers to a named speaker.
+
+Gemini API TTS also accepts expressive square-bracket audio tags in the text,
+such as `[whispers]` or `[laughs]`. To keep tags out of the visible chat reply
+while sending them to TTS, put them inside a `[[tts:text]]...[[/tts:text]]`
+block:
 
 ```text
 Here is the clean reply text.
@@ -297,6 +308,9 @@ Gemini Live API for backend audio bridges such as Voice Call and Google Meet.
 | VAD start sensitivity | `...google.startSensitivity`                                        | (unset)                                                                               |
 | VAD end sensitivity   | `...google.endSensitivity`                                          | (unset)                                                                               |
 | Silence duration      | `...google.silenceDurationMs`                                       | (unset)                                                                               |
+| Activity handling     | `...google.activityHandling`                                        | Google default, `start-of-activity-interrupts`                                        |
+| Turn coverage         | `...google.turnCoverage`                                            | Google default, `only-activity`                                                       |
+| Disable auto VAD      | `...google.automaticActivityDetectionDisabled`                      | `false`                                                                               |
 | API key               | `...google.apiKey`                                                  | Falls back to `models.providers.google.apiKey`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY` |
 
 Example Voice Call realtime config:
@@ -315,6 +329,8 @@ Example Voice Call realtime config:
               google: {
                 model: "gemini-2.5-flash-native-audio-preview-12-2025",
                 voice: "Kore",
+                activityHandling: "start-of-activity-interrupts",
+                turnCoverage: "only-activity",
               },
             },
           },
@@ -336,10 +352,16 @@ SDK rejects language-code hints on this API path.
 </Note>
 
 <Note>
-Control UI Talk browser sessions still require a realtime voice provider with a
-browser WebRTC session implementation. Today that path is OpenAI Realtime; the
-Google provider is for backend realtime bridges.
+Control UI Talk supports Google Live browser sessions with constrained one-use
+tokens. Backend-only realtime voice providers can also run through the generic
+Gateway relay transport, which keeps provider credentials on the Gateway.
 </Note>
+
+For maintainer live verification, run
+`OPENAI_API_KEY=... GEMINI_API_KEY=... node --import tsx scripts/dev/realtime-talk-live-smoke.ts`.
+The Google leg mints the same constrained Live API token shape used by Control
+UI Talk, opens the browser WebSocket endpoint, sends the initial setup payload,
+and waits for `setupComplete`.
 
 ## Advanced configuration
 

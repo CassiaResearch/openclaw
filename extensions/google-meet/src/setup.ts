@@ -3,10 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import type { GoogleMeetConfig } from "./config.js";
 
-type SetupCheck = {
+export type SetupCheck = {
   id: string;
   ok: boolean;
   message: string;
+};
+
+export type GoogleMeetSetupStatus = {
+  ok: boolean;
+  checks: SetupCheck[];
 };
 
 function resolveUserPath(input: string): string {
@@ -66,29 +71,13 @@ export function getGoogleMeetSetupStatus(
     });
   }
 
-  if (config.chrome.browserProfile) {
-    const profilePath = path.join(
-      os.homedir(),
-      "Library",
-      "Application Support",
-      "Google",
-      "Chrome",
-      config.chrome.browserProfile,
-    );
-    checks.push({
-      id: "chrome-profile",
-      ok: fs.existsSync(profilePath),
-      message: fs.existsSync(profilePath)
-        ? "Chrome profile found"
-        : `Chrome profile missing: ${config.chrome.browserProfile}`,
-    });
-  } else {
-    checks.push({
-      id: "chrome-profile",
-      ok: true,
-      message: "Chrome profile not pinned; default signed-in profile will be used",
-    });
-  }
+  checks.push({
+    id: "chrome-profile",
+    ok: true,
+    message: config.chrome.browserProfile
+      ? "Local Chrome uses the OpenClaw browser profile; chrome.browserProfile is passed to chrome-node hosts"
+      : "Local Chrome uses the OpenClaw browser profile; configure browser.defaultProfile to choose another profile",
+  });
 
   checks.push({
     id: "audio-bridge",
@@ -99,7 +88,7 @@ export function getGoogleMeetSetupStatus(
     message: config.chrome.audioBridgeCommand
       ? "Chrome audio bridge command configured"
       : config.chrome.audioInputCommand && config.chrome.audioOutputCommand
-        ? "Chrome command-pair realtime audio bridge configured"
+        ? `Chrome command-pair realtime audio bridge configured (${config.chrome.audioFormat})`
         : "Chrome realtime audio bridge not configured",
   });
 
@@ -173,6 +162,17 @@ export function getGoogleMeetSetupStatus(
 
   return {
     ok: checks.every((check) => check.ok),
+    checks,
+  };
+}
+
+export function addGoogleMeetSetupCheck(
+  status: GoogleMeetSetupStatus,
+  check: SetupCheck,
+): GoogleMeetSetupStatus {
+  const checks = [...status.checks, check];
+  return {
+    ok: checks.every((item) => item.ok),
     checks,
   };
 }

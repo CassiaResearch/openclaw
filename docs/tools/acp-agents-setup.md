@@ -8,8 +8,22 @@ title: "ACP agents — setup"
 ---
 
 For the overview, operator runbook, and concepts, see [ACP agents](/tools/acp-agents).
-This page covers acpx harness config, plugin setup for the MCP bridges, and
-permission configuration.
+
+The sections below cover acpx harness config, plugin setup for the MCP bridges, and permission configuration.
+
+Use this page only when you are setting up the ACP/acpx route. For native Codex
+app-server runtime config, use [Codex harness](/plugins/codex-harness). For
+OpenAI API keys or Codex OAuth model-provider config, use
+[OpenAI](/providers/openai).
+
+Codex has two OpenClaw routes:
+
+| Route                      | Config/command                                         | Setup page                              |
+| -------------------------- | ------------------------------------------------------ | --------------------------------------- |
+| Native Codex app-server    | `/codex ...`, `agentRuntime.id: "codex"`               | [Codex harness](/plugins/codex-harness) |
+| Explicit Codex ACP adapter | `/acp spawn codex`, `runtime: "acp", agentId: "codex"` | This page                               |
+
+Prefer the native route unless you explicitly need ACP/acpx behavior.
 
 ## acpx harness support (current)
 
@@ -34,6 +48,11 @@ When OpenClaw uses the acpx backend, prefer these values for `agentId` unless yo
 If your local Cursor install still exposes ACP as `agent acp`, override the `cursor` agent command in your acpx config instead of changing the built-in default.
 
 Direct acpx CLI usage can also target arbitrary adapters via `--agent <command>`, but that raw escape hatch is an acpx CLI feature (not the normal OpenClaw `agentId` path).
+
+Model control is adapter-capability dependent. Codex ACP model refs are
+normalized by OpenClaw before startup. Other harnesses need ACP `models` plus
+`session/set_model` support; if a harness exposes neither that ACP capability
+nor its own startup model flag, OpenClaw/acpx cannot force a model selection.
 
 ## Required config
 
@@ -138,7 +157,10 @@ Then verify backend health:
 
 ### acpx command and version configuration
 
-By default, the bundled `acpx` plugin uses its plugin-local pinned binary (`node_modules/.bin/acpx` inside the plugin package). Startup registers the backend as not-ready and a background job verifies `acpx --version`; if the binary is missing or mismatched, it runs `npm install --omit=dev --no-save acpx@<pinned>` and re-verifies. The gateway stays non-blocking throughout.
+By default, the bundled `acpx` plugin registers the embedded ACP backend without
+spawning an ACP agent during Gateway startup. Run `/acp doctor` for an explicit
+live probe. Set `OPENCLAW_ACPX_RUNTIME_STARTUP_PROBE=1` only when you need the
+Gateway to probe the configured agent at startup.
 
 Override the command or version in plugin config:
 
@@ -163,6 +185,77 @@ Override the command or version in plugin config:
 - Custom `command` paths disable plugin-local auto-install.
 
 See [Plugins](/tools/plugin).
+
+## Optional Coven backend
+
+OpenClaw can also register a bundled, opt-in `coven` ACP backend for operators
+who want ACP coding sessions supervised by a local [Coven](https://github.com/OpenCoven/coven)
+daemon instead of launched directly through ACPX.
+
+This is intentionally an extension, not a core runtime path:
+
+- the default ACPX backend stays unchanged for normal installs;
+- Coven has its own daemon, socket, session store, harness mapping, and project
+  boundary model;
+- the bridge can be enabled, disabled, configured, and reviewed independently
+  through the plugin system; and
+- OpenClaw remains responsible for ACP session routing, chat bindings, task
+  state, and fallback policy while Coven owns harness supervision.
+
+Minimal opt-in config:
+
+```json5
+{
+  acp: {
+    enabled: true,
+    backend: "coven",
+    defaultAgent: "codex",
+  },
+  plugins: {
+    entries: {
+      coven: {
+        enabled: true,
+        config: {
+          // Optional. Defaults to ~/.coven. Environment variables are not used for this trust anchor.
+          covenHome: "~/.coven",
+          // Optional. Defaults to <covenHome>/coven.sock; overrides must resolve to that path.
+          socketPath: "~/.coven/coven.sock",
+          // Optional. Defaults to false; enable only when direct ACP fallback is acceptable.
+          allowFallback: false,
+          // Optional. Used only when allowFallback is true.
+          fallbackBackend: "acpx",
+        },
+      },
+    },
+  },
+}
+```
+
+When selected, OpenClaw checks Coven daemon health over the configured Unix
+socket before launching. A successful launch creates a Coven session and records
+the Coven session id in the ACP runtime handle. If the health check or launch
+fails, OpenClaw fails closed by default so `acp.backend="coven"` cannot silently
+downgrade to direct ACP execution. Set `allowFallback: true` only when direct
+ACP fallback is an explicit, acceptable operator choice.
+
+For path safety, `~` in `covenHome` and `socketPath` expands to the current
+user home directory, and configured Coven paths must be absolute after that
+expansion. OpenClaw rejects workspace-relative Coven daemon paths because the
+daemon socket is a local user trust anchor, not repository-controlled state.
+`socketPath` must resolve to `<covenHome>/coven.sock`; OpenClaw does not allow
+arbitrary Coven socket filenames because the daemon socket is the local trust
+anchor. Keep `covenHome` owned by the OpenClaw user and private (`0700`);
+OpenClaw rejects symlinked, shared-accessible, shared-writable, or non-socket
+Coven socket paths before connecting. The Coven backend currently requires Unix
+socket validation and fails closed on Windows rather than trusting a socket path
+whose owner and permissions cannot be validated by this plugin.
+
+The default harness mapping sends known ACP agent ids such as `codex`, `claude`,
+`gemini`, and `opencode` to explicitly authorized Coven harness ids. Unknown
+ACP agent ids are rejected instead of being forwarded as harness names. Override
+`plugins.entries.coven.config.harnesses` only when your local Coven install uses
+custom harness names, and keep `acp.allowedAgents` aligned with the intended
+chat-exposed harness set.
 
 ### Automatic dependency install
 
@@ -234,9 +327,11 @@ Restart the gateway after changing this value.
 
 ### Health probe agent configuration
 
-The bundled `acpx` plugin probes one harness agent while deciding whether the
-embedded runtime backend is ready. It defaults to `codex`. If your deployment
-uses a different default ACP agent, set the probe agent to the same id:
+When `/acp doctor` or the opt-in startup probe checks the backend, the bundled
+`acpx` plugin probes one harness agent. If `acp.allowedAgents` is set, it
+defaults to the first allowed agent; otherwise it defaults to `codex`. If your
+deployment needs a different ACP agent for health checks, set the probe agent
+explicitly:
 
 ```bash
 openclaw config set plugins.entries.acpx.config.probeAgent claude
@@ -280,9 +375,11 @@ openclaw config set plugins.entries.acpx.config.nonInteractivePermissions fail
 
 Restart the gateway after changing these values.
 
-> **Important:** OpenClaw currently defaults to `permissionMode=approve-reads` and `nonInteractivePermissions=fail`. In non-interactive ACP sessions, any write or exec that triggers a permission prompt can fail with `AcpRuntimeError: Permission prompt unavailable in non-interactive mode`.
->
-> If you need to restrict permissions, set `nonInteractivePermissions` to `deny` so sessions degrade gracefully instead of crashing.
+<Warning>
+OpenClaw defaults to `permissionMode=approve-reads` and `nonInteractivePermissions=fail`. In non-interactive ACP sessions, any write or exec that triggers a permission prompt can fail with `AcpRuntimeError: Permission prompt unavailable in non-interactive mode`.
+
+If you need to restrict permissions, set `nonInteractivePermissions` to `deny` so sessions degrade gracefully instead of crashing.
+</Warning>
 
 ## Related
 

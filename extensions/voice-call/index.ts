@@ -19,7 +19,6 @@ import {
   type VoiceCallConfig,
 } from "./src/config.js";
 import type { CoreConfig } from "./src/core-bridge.js";
-import { TerminalStates } from "./src/types.js";
 
 const voiceCallConfigSchema = {
   parse(value: unknown): VoiceCallConfig {
@@ -101,6 +100,11 @@ const voiceCallConfigSchema = {
       advanced: true,
     },
     store: { label: "Call Log Store Path", advanced: true },
+    agentId: {
+      label: "Response Agent ID",
+      help: 'Agent workspace used for voice response generation. Defaults to "main".',
+      advanced: true,
+    },
     responseModel: {
       label: "Response Model",
       help: "Optional override. Falls back to the runtime default model when unset.",
@@ -117,13 +121,6 @@ const VoiceCallToolSchema = Type.Union([
     to: Type.Optional(Type.String({ description: "Call target" })),
     message: Type.String({ description: "Intro message" }),
     mode: Type.Optional(Type.Union([Type.Literal("notify"), Type.Literal("conversation")])),
-    realtimeConfig: Type.Optional(
-      Type.Object({
-        instructions: Type.String({
-          description: "Instructions for the realtime voice provider",
-        }),
-      }),
-    ),
   }),
   Type.Object({
     action: Type.Literal("continue_call"),
@@ -149,10 +146,6 @@ const VoiceCallToolSchema = Type.Union([
     callId: Type.String({ description: "Call ID" }),
   }),
   Type.Object({
-    action: Type.Literal("monitor_call"),
-    callId: Type.String({ description: "Call ID to monitor until completion" }),
-  }),
-  Type.Object({
     mode: Type.Optional(Type.Union([Type.Literal("call"), Type.Literal("status")])),
     to: Type.Optional(Type.String({ description: "Call target" })),
     sid: Type.Optional(Type.String({ description: "Call SID" })),
@@ -164,6 +157,24 @@ function asParamRecord(params: unknown): Record<string, unknown> {
   return params && typeof params === "object" && !Array.isArray(params)
     ? (params as Record<string, unknown>)
     : {};
+}
+
+const VOICE_CALL_RUNTIME_KEY = Symbol.for("openclaw.voice-call.runtime");
+const VOICE_CALL_RUNTIME_PROMISE_KEY = Symbol.for("openclaw.voice-call.runtimePromise");
+const VOICE_CALL_RUNTIME_STOP_PROMISE_KEY = Symbol.for("openclaw.voice-call.runtimeStopPromise");
+
+type VoiceCallRuntimeGlobalState = typeof globalThis & {
+  [VOICE_CALL_RUNTIME_KEY]?: VoiceCallRuntime | null;
+  [VOICE_CALL_RUNTIME_PROMISE_KEY]?: Promise<VoiceCallRuntime> | null;
+  [VOICE_CALL_RUNTIME_STOP_PROMISE_KEY]?: Promise<void> | null;
+};
+
+function getVoiceCallRuntimeGlobalState(): VoiceCallRuntimeGlobalState {
+  const state = globalThis as VoiceCallRuntimeGlobalState;
+  state[VOICE_CALL_RUNTIME_KEY] ??= null;
+  state[VOICE_CALL_RUNTIME_PROMISE_KEY] ??= null;
+  state[VOICE_CALL_RUNTIME_STOP_PROMISE_KEY] ??= null;
+  return state;
 }
 
 export default definePluginEntry({
@@ -185,20 +196,7 @@ export default definePluginEntry({
       }
     }
 
-    const VOICE_RUNTIME_KEY = Symbol.for("openclaw.voice.runtime");
-    const VOICE_RUNTIME_PROMISE_KEY = Symbol.for("openclaw.voice.runtimePromise");
-    const VOICE_RUNTIME_STOP_PROMISE_KEY = Symbol.for("openclaw.voice.runtimeStopPromise");
-
-    const globalState = globalThis as typeof globalThis & {
-      [VOICE_RUNTIME_KEY]?: VoiceCallRuntime | null;
-      [VOICE_RUNTIME_PROMISE_KEY]?: Promise<VoiceCallRuntime> | null;
-      [VOICE_RUNTIME_STOP_PROMISE_KEY]?: Promise<void> | null;
-    };
-
-    globalState[VOICE_RUNTIME_KEY] ??= null;
-    globalState[VOICE_RUNTIME_PROMISE_KEY] ??= null;
-    globalState[VOICE_RUNTIME_STOP_PROMISE_KEY] ??= null;
-    const RETRY_ENSURE_RUNTIME = Symbol("voice-call.ensureRuntime.retry");
+    const runtimeState = getVoiceCallRuntimeGlobalState();
 
     const ensureRuntime = async (): Promise<VoiceCallRuntime> => {
       if (!config.enabled) {
@@ -209,16 +207,17 @@ export default definePluginEntry({
       }
 
       while (true) {
-        if (globalState[VOICE_RUNTIME_STOP_PROMISE_KEY]) {
-          await globalState[VOICE_RUNTIME_STOP_PROMISE_KEY];
+        if (runtimeState[VOICE_CALL_RUNTIME_STOP_PROMISE_KEY]) {
+          await runtimeState[VOICE_CALL_RUNTIME_STOP_PROMISE_KEY];
           continue;
         }
 
-        if (globalState[VOICE_RUNTIME_KEY]) {
-          return globalState[VOICE_RUNTIME_KEY];
+        const runtime = runtimeState[VOICE_CALL_RUNTIME_KEY];
+        if (runtime) {
+          return runtime;
         }
 
-        let runtimePromise = globalState[VOICE_RUNTIME_PROMISE_KEY];
+        let runtimePromise = runtimeState[VOICE_CALL_RUNTIME_PROMISE_KEY];
         if (!runtimePromise) {
           runtimePromise = createVoiceCallRuntime({
             config,
@@ -228,35 +227,25 @@ export default definePluginEntry({
             ttsRuntime: api.runtime.tts,
             logger: api.logger,
           });
-          globalState[VOICE_RUNTIME_PROMISE_KEY] = runtimePromise;
+          runtimeState[VOICE_CALL_RUNTIME_PROMISE_KEY] = runtimePromise;
         }
 
         try {
-          const runtime = await runtimePromise;
-          const stopPromise: Promise<void> | null =
-            globalState[VOICE_RUNTIME_STOP_PROMISE_KEY] ?? null;
-          if (stopPromise !== null) {
-            await Promise.resolve(stopPromise);
-            if (globalState[VOICE_RUNTIME_KEY]) {
-              return globalState[VOICE_RUNTIME_KEY];
-            }
-            throw RETRY_ENSURE_RUNTIME;
-          }
-          if (globalState[VOICE_RUNTIME_PROMISE_KEY] !== runtimePromise) {
-            if (globalState[VOICE_RUNTIME_KEY]) {
-              return globalState[VOICE_RUNTIME_KEY];
-            }
-            throw RETRY_ENSURE_RUNTIME;
-          }
-          globalState[VOICE_RUNTIME_KEY] = runtime;
-          return runtime;
-        } catch (err) {
-          if (err === RETRY_ENSURE_RUNTIME) {
+          const createdRuntime = await runtimePromise;
+          if (runtimeState[VOICE_CALL_RUNTIME_STOP_PROMISE_KEY]) {
             continue;
           }
-          if (globalState[VOICE_RUNTIME_PROMISE_KEY] === runtimePromise) {
-            globalState[VOICE_RUNTIME_PROMISE_KEY] = null;
-            globalState[VOICE_RUNTIME_KEY] = null;
+          if (runtimeState[VOICE_CALL_RUNTIME_PROMISE_KEY] !== runtimePromise) {
+            continue;
+          }
+          runtimeState[VOICE_CALL_RUNTIME_KEY] = createdRuntime;
+          return createdRuntime;
+        } catch (err) {
+          if (runtimeState[VOICE_CALL_RUNTIME_PROMISE_KEY] === runtimePromise) {
+            // Reset shared state so the next call can retry instead of caching
+            // a rejected promise across plugin contexts. See: #32387, #58115.
+            runtimeState[VOICE_CALL_RUNTIME_PROMISE_KEY] = null;
+            runtimeState[VOICE_CALL_RUNTIME_KEY] = null;
           }
           throw err;
         }
@@ -282,12 +271,10 @@ export default definePluginEntry({
       to: string;
       message?: string;
       mode?: "notify" | "conversation";
-      realtimeConfig?: Record<string, unknown>;
     }) => {
       const result = await params.rt.manager.initiateCall(params.to, undefined, {
         message: params.message,
         mode: params.mode,
-        realtimeConfig: params.realtimeConfig,
       });
       if (!result.success) {
         params.respond(false, { error: result.error || "initiate failed" });
@@ -331,8 +318,6 @@ export default definePluginEntry({
       "voicecall.initiate",
       async ({ params, respond }: GatewayRequestHandlerOptions) => {
         try {
-          const mode =
-            params?.mode === "notify" || params?.mode === "conversation" ? params.mode : undefined;
           const message = normalizeOptionalString(params?.message) ?? "";
           if (!message) {
             respond(false, { error: "message required" });
@@ -344,13 +329,14 @@ export default definePluginEntry({
             respond(false, { error: "to required" });
             return;
           }
+          const mode =
+            params?.mode === "notify" || params?.mode === "conversation" ? params.mode : undefined;
           await initiateCallAndRespond({
             rt,
             respond,
             to,
             message,
             mode,
-            realtimeConfig: params?.realtimeConfig as Record<string, unknown> | undefined,
           });
         } catch (err) {
           sendError(respond, err);
@@ -514,7 +500,6 @@ export default definePluginEntry({
                     rawParams.mode === "notify" || rawParams.mode === "conversation"
                       ? rawParams.mode
                       : undefined,
-                  realtimeConfig: rawParams.realtimeConfig as Record<string, unknown> | undefined,
                 });
                 if (!result.success) {
                   throw new Error(result.error || "initiate failed");
@@ -577,34 +562,6 @@ export default definePluginEntry({
                   rt.manager.getCall(callId) || rt.manager.getCallByProviderCallId(callId);
                 return json(call ? { found: true, call } : { found: false });
               }
-              case "monitor_call": {
-                const callId = normalizeOptionalString(rawParams.callId) ?? "";
-                if (!callId) {
-                  throw new Error("callId required");
-                }
-
-                const pollIntervalMs = 3000;
-                const maxWaitMs = rt.config.maxDurationSeconds * 1000 + 30_000;
-                const deadline = Date.now() + maxWaitMs;
-
-                while (Date.now() < deadline) {
-                  const call = rt.manager.getCall(callId);
-                  if (!call) {
-                    throw new Error(`Call ${callId} not found`);
-                  }
-                  if (TerminalStates.has(call.state)) {
-                    return json({ completed: true, call });
-                  }
-                  await new Promise((r) => setTimeout(r, pollIntervalMs));
-                }
-
-                const finalCall = rt.manager.getCall(callId);
-                return json({
-                  completed: false,
-                  timedOut: true,
-                  call: finalCall ?? null,
-                });
-              }
             }
           }
 
@@ -637,56 +594,6 @@ export default definePluginEntry({
       },
     });
 
-    api.on("before_prompt_build", async () => {
-      if (!config.enabled || !config.useSubagent) {
-        return undefined;
-      }
-      const realtimeEnabled = config.realtime.enabled;
-      const lines: string[] = [
-        "## Voice Call — Subagent Pattern",
-        "Only spawn the subagent at the moment you are ready to invoke voice_call. Do all planning, parameter gathering, and confirmation in the main agent first. Do not spawn the subagent to plan, draft, or decide on a call.",
-        "",
-        "The subagent's sole responsibility is to proxy one voice_call invocation and monitor it to completion:",
-        "1. Call voice_call with action=initiate_call using the exact parameters you pass in.",
-        "2. Take the returned callId and immediately call voice_call with action=monitor_call to block until the call reaches a terminal state.",
-        "3. Return the final call result (transcript, outcome, duration, action items) to the parent agent.",
-        "The subagent must not deviate, retry independently, re-plan, or make additional voice_call invocations beyond this proxy+monitor flow.",
-        "",
-        "When spawning via sessions_spawn, pass the subagent every voice_call initiate_call parameter it needs to forward verbatim:",
-        "- to: destination phone number in E.164 (omit to use the configured default toNumber)",
-        "- message: intro/opening message",
-        "- mode: one of notify | conversation",
-        "- realtimeConfig: { instructions: string } — optional override for the realtime voice instructions on this call",
-        "",
-        "Instruct the subagent to pass these through to voice_call initiate_call unchanged, then run monitor_call with the returned callId and summarize the terminal call result.",
-      ];
-
-      if (realtimeEnabled) {
-        const defaultRealtimeInstructions =
-          typeof config.realtime.instructions === "string"
-            ? config.realtime.instructions.trim()
-            : "";
-        lines.push(
-          "",
-          "### Realtime voice is enabled",
-          "Realtime voice-to-voice is configured for this plugin. When you want to override the configured realtime instructions for this specific call (persona, goals, constraints, tool-use rules, hang-up conditions), supply a complete realtimeConfig.instructions string and pass it through verbatim. Do not rely on the subagent to write or expand these instructions — compose the full realtime instructions in the parent agent.",
-        );
-        if (defaultRealtimeInstructions.length > 0) {
-          lines.push(
-            "",
-            "Default realtime instructions configured for this plugin (treat as a baseline if you choose to override; otherwise the plugin uses these as-is):",
-            "```",
-            defaultRealtimeInstructions,
-            "```",
-          );
-        }
-      }
-
-      return {
-        appendSystemContext: lines.join("\n"),
-      };
-    });
-
     api.registerCli(
       ({ program }) =>
         registerVoiceCallCli({
@@ -700,38 +607,42 @@ export default definePluginEntry({
 
     api.registerService({
       id: "voicecall",
-      start: async () => {
+      start: () => {
         if (!config.enabled) {
           return;
         }
-        try {
-          await ensureRuntime();
-        } catch (err) {
-          api.logger.error(`[voice-call] Failed to start runtime: ${formatErrorMessage(err)}`);
+        if (!validation.valid) {
+          api.logger.warn(
+            `[voice-call] Runtime not started; setup incomplete: ${validation.errors.join("; ")}`,
+          );
+          return;
         }
+        void ensureRuntime().catch((err) => {
+          api.logger.error(`[voice-call] Failed to start runtime: ${formatErrorMessage(err)}`);
+        });
       },
       stop: async () => {
-        if (globalState[VOICE_RUNTIME_STOP_PROMISE_KEY]) {
-          await globalState[VOICE_RUNTIME_STOP_PROMISE_KEY];
+        if (runtimeState[VOICE_CALL_RUNTIME_STOP_PROMISE_KEY]) {
+          await runtimeState[VOICE_CALL_RUNTIME_STOP_PROMISE_KEY];
           return;
         }
-        const capturedPromise = globalState[VOICE_RUNTIME_PROMISE_KEY];
-        const capturedRuntime = globalState[VOICE_RUNTIME_KEY];
-        if (!capturedPromise && !capturedRuntime) {
+        const runtime = runtimeState[VOICE_CALL_RUNTIME_KEY];
+        const runtimePromise = runtimeState[VOICE_CALL_RUNTIME_PROMISE_KEY];
+        if (!runtime && !runtimePromise) {
           return;
         }
-        globalState[VOICE_RUNTIME_PROMISE_KEY] = null;
-        globalState[VOICE_RUNTIME_KEY] = null;
+        runtimeState[VOICE_CALL_RUNTIME_KEY] = null;
+        runtimeState[VOICE_CALL_RUNTIME_PROMISE_KEY] = null;
         const stopPromise = (async () => {
-          const rt = capturedRuntime ?? (await capturedPromise!);
+          const rt = runtime ?? (await runtimePromise!);
           await rt.stop();
         })();
-        globalState[VOICE_RUNTIME_STOP_PROMISE_KEY] = stopPromise;
+        runtimeState[VOICE_CALL_RUNTIME_STOP_PROMISE_KEY] = stopPromise;
         try {
           await stopPromise;
         } finally {
-          if (globalState[VOICE_RUNTIME_STOP_PROMISE_KEY] === stopPromise) {
-            globalState[VOICE_RUNTIME_STOP_PROMISE_KEY] = null;
+          if (runtimeState[VOICE_CALL_RUNTIME_STOP_PROMISE_KEY] === stopPromise) {
+            runtimeState[VOICE_CALL_RUNTIME_STOP_PROMISE_KEY] = null;
           }
         }
       },

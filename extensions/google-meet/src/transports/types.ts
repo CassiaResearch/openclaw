@@ -27,10 +27,17 @@ export type GoogleMeetChromeHealth = {
   manualActionMessage?: string;
   providerConnected?: boolean;
   realtimeReady?: boolean;
+  audioInputActive?: boolean;
+  audioOutputActive?: boolean;
   lastInputAt?: string;
   lastOutputAt?: string;
+  lastClearAt?: string;
   lastInputBytes?: number;
   lastOutputBytes?: number;
+  consecutiveInputErrors?: number;
+  lastInputError?: string;
+  clearCount?: number;
+  queuedInputChunks?: number;
   browserUrl?: string;
   browserTitle?: string;
   bridgeClosed?: boolean;
@@ -76,4 +83,5 @@ export type GoogleMeetSession = {
 
 export type GoogleMeetJoinResult = {
   session: GoogleMeetSession;
+  spoken?: boolean;
 };

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Runs Open WebUI against a Dockerized OpenClaw Gateway and verifies the proxied
+# chat path with a real OpenAI-compatible request.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -47,6 +49,7 @@ cleanup() {
 trap cleanup EXIT
 
 docker_e2e_build_or_reuse "$IMAGE_NAME" openwebui
+docker_e2e_harness_mount_args
 
 echo "Pulling Open WebUI image: $OPENWEBUI_IMAGE"
 timeout "$DOCKER_PULL_TIMEOUT" docker pull "$OPENWEBUI_IMAGE" >/dev/null
@@ -55,6 +58,7 @@ echo "Creating Docker network..."
 docker_cmd docker network create "$NET_NAME" >/dev/null
 
 echo "Starting gateway container..."
+# Harness files are mounted read-only; the app under test comes from /app/dist.
 docker_cmd docker run -d \
   --name "$GW_NAME" \
   --network "$NET_NAME" \
@@ -66,6 +70,7 @@ docker_cmd docker run -d \
   -e "OPENCLAW_SKIP_CANVAS_HOST=1" \
   -e OPENAI_API_KEY \
   ${OPENAI_BASE_URL_VALUE:+-e OPENAI_BASE_URL} \
+  "${DOCKER_E2E_HARNESS_ARGS[@]}" \
   "$IMAGE_NAME" \
   bash -lc '
     set -euo pipefail
@@ -152,7 +157,7 @@ docker_cmd docker run -d \
   --network "$NET_NAME" \
   -e ENV=prod \
   -e WEBUI_NAME="OpenClaw E2E" \
-  -e WEBUI_SECRET_KEY="openclaw-openwebui-e2e-secret" \
+  -e WEBUI_SECRET_KEY="openclaw-openwebui-e2e-secret-key-v1" \
   -e OFFLINE_MODE=True \
   -e ENABLE_VERSION_UPDATE_CHECK=False \
   -e ENABLE_PERSISTENT_CONFIG=False \

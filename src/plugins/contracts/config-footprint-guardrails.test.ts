@@ -162,16 +162,22 @@ describe("config footprint guardrails", () => {
     );
   });
 
-  it("keeps bundled channel schemas as a fixed legacy SDK compatibility surface", () => {
+  it("keeps bundled channel schemas out of the generic channel config SDK surface", () => {
     const source = readSource("src/plugin-sdk/channel-config-schema.ts");
-    const providersCoreExports = source.match(
-      /Legacy bundled channel schema exports[\s\S]*?export \{(?<exports>[\s\S]*?)\} from "\.\.\/config\/zod-schema\.providers-core\.js";/,
-    )?.groups?.exports;
-    expect(providersCoreExports).toBeDefined();
-    const exportedSchemaNames = Array.from(
-      `${providersCoreExports ?? ""}\nWhatsAppConfigSchema`.matchAll(
-        /\b([A-Z][A-Za-z0-9]+ConfigSchema)\b/g,
+    const legacySource = readSource("src/plugin-sdk/channel-config-schema-legacy.ts");
+    const legacySection = legacySource.slice(
+      legacySource.indexOf("Deprecated bundled-channel compatibility surface"),
+    );
+    const bundledSchemaExportBlocks = Array.from(
+      legacySection.matchAll(
+        /export \{(?<exports>[^}]*)\} from "\.\.\/config\/zod-schema\.providers-(?:core|whatsapp)\.js";/g,
       ),
+    )
+      .map((match) => match.groups?.exports)
+      .filter((block): block is string => Boolean(block));
+    expect(bundledSchemaExportBlocks).toHaveLength(2);
+    const exportedSchemaNames = Array.from(
+      bundledSchemaExportBlocks.join("\n").matchAll(/\b([A-Z][A-Za-z0-9]+ConfigSchema)\b/g),
     )
       .map((match) => match[1])
       .filter((name): name is string => Boolean(name))
@@ -187,6 +193,10 @@ describe("config footprint guardrails", () => {
       "TelegramConfigSchema",
       "WhatsAppConfigSchema",
     ]);
-    expect(source).toContain("Legacy bundled channel schema exports");
+    for (const schemaName of exportedSchemaNames) {
+      expect(source).not.toContain(schemaName);
+    }
+    expect(legacySource).toContain("Deprecated bundled-channel compatibility surface");
+    expect(legacySource).toContain("openclaw/plugin-sdk/channel-config-schema");
   });
 });

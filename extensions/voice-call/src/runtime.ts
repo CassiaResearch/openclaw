@@ -1,4 +1,4 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-types";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   consultRealtimeVoiceAgent,
@@ -46,6 +46,14 @@ type PlivoProviderModule = typeof import("./providers/plivo.js");
 type MockProviderModule = typeof import("./providers/mock.js");
 type RealtimeVoiceRuntimeModule = typeof import("./realtime-voice.runtime.js");
 type RealtimeHandlerModule = typeof import("./webhook/realtime-handler.js");
+
+const REALTIME_VOICE_CONSULT_SYSTEM_PROMPT = [
+  "You are a behind-the-scenes consultant for a live phone voice agent.",
+  "Prioritize a fast, speakable answer over exhaustive investigation.",
+  "For tool-backed status checks, prefer one or two bounded read-only queries before answering.",
+  "Do not print secret values or dump environment variables; only check whether required configuration is present.",
+  "Be accurate, brief, and speakable.",
+].join(" ");
 
 let telnyxProviderPromise: Promise<TelnyxProviderModule> | undefined;
 let twilioProviderPromise: Promise<TwilioProviderModule> | undefined;
@@ -156,6 +164,40 @@ function isLoopbackBind(bind: string | undefined): boolean {
     return false;
   }
   return bind === "127.0.0.1" || bind === "::1" || bind === "localhost";
+}
+
+function providerRequiresPublicWebhook(providerName: VoiceCallProvider["name"]): boolean {
+  return providerName === "twilio" || providerName === "telnyx" || providerName === "plivo";
+}
+
+function isLocalOnlyWebhookHost(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase();
+  if (!host) {
+    return false;
+  }
+  if (
+    host === "localhost" ||
+    host === "0.0.0.0" ||
+    host === "::" ||
+    host === "::1" ||
+    host.startsWith("127.")
+  ) {
+    return true;
+  }
+  if (host.startsWith("10.") || host.startsWith("192.168.") || host.startsWith("169.254.")) {
+    return true;
+  }
+  const private172 = /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+  return private172 || host.startsWith("fc") || host.startsWith("fd");
+}
+
+function isProviderUnreachableWebhookUrl(webhookUrl: string): boolean {
+  try {
+    const parsed = new URL(webhookUrl);
+    return isLocalOnlyWebhookHost(parsed.hostname);
+  } catch {
+    return false;
+  }
 }
 
 async function resolveProvider(config: VoiceCallConfig): Promise<VoiceCallProvider> {
@@ -318,6 +360,7 @@ export async function createVoiceCallRuntime(params: {
             cfg,
             agentRuntime,
             logger: log,
+            agentId: config.agentId ?? "main",
             sessionKey: resolveVoiceCallConsultSessionKey(call),
             messageProvider: "voice",
             lane: "voice",
@@ -333,8 +376,7 @@ export async function createVoiceCallRuntime(params: {
             thinkLevel,
             timeoutMs: config.responseTimeoutMs,
             toolsAllow: resolveRealtimeVoiceAgentConsultToolsAllow(config.realtime.toolPolicy),
-            extraSystemPrompt:
-              "You are a behind-the-scenes consultant for a live phone voice agent. Be accurate, brief, and speakable.",
+            extraSystemPrompt: REALTIME_VOICE_CONSULT_SYSTEM_PROMPT,
           });
         },
       );
@@ -374,6 +416,17 @@ export async function createVoiceCallRuntime(params: {
     }
 
     const webhookUrl = publicUrl ?? localUrl;
+
+    if (
+      providerRequiresPublicWebhook(provider.name) &&
+      isProviderUnreachableWebhookUrl(webhookUrl)
+    ) {
+      throw new Error(
+        `[voice-call] ${provider.name} requires a publicly reachable webhook URL. ` +
+          `Refusing to use local-only webhook ${webhookUrl}. ` +
+          "Set plugins.entries.voice-call.config.publicUrl or enable tunnel/tailscale exposure.",
+      );
+    }
 
     if (publicUrl && provider.name === "twilio") {
       (provider as TwilioProvider).setPublicUrl(publicUrl);
@@ -418,7 +471,7 @@ export async function createVoiceCallRuntime(params: {
 
     log.info("[voice-call] Runtime initialized");
     log.info(`[voice-call] Webhook URL: ${webhookUrl}`);
-    if (publicUrl) {
+    if (publicUrl && publicUrl !== webhookUrl) {
       log.info(`[voice-call] Public URL: ${publicUrl}`);
     }
 

@@ -1,4 +1,3 @@
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import type { AgentHarness } from "../agents/harness/types.js";
 import type { ChannelPlugin } from "../channels/plugins/types.plugin.js";
 import type { OperatorScope } from "../gateway/operator-scopes.js";
@@ -44,6 +43,7 @@ import type {
   PluginLogger,
   PluginOrigin,
   PluginTextTransformRegistration,
+  MigrationProviderPlugin,
   ProviderPlugin,
   RealtimeTranscriptionProviderPlugin,
   RealtimeVoiceProviderPlugin,
@@ -150,16 +150,10 @@ export type PluginWebFetchProviderRegistration =
   PluginOwnedProviderRegistration<WebFetchProviderPlugin>;
 export type PluginWebSearchProviderRegistration =
   PluginOwnedProviderRegistration<WebSearchProviderPlugin>;
+export type PluginMigrationProviderRegistration =
+  PluginOwnedProviderRegistration<MigrationProviderPlugin>;
 export type PluginMemoryEmbeddingProviderRegistration =
   PluginOwnedProviderRegistration<MemoryEmbeddingProviderAdapter>;
-export type PluginEmbeddedExtensionFactoryRegistration = {
-  pluginId: string;
-  pluginName?: string;
-  rawFactory: ExtensionFactory;
-  factory: ExtensionFactory;
-  source: string;
-  rootDir?: string;
-};
 export type PluginCodexAppServerExtensionFactoryRegistration = {
   pluginId: string;
   pluginName?: string;
@@ -198,6 +192,7 @@ export type PluginServiceRegistration = {
   pluginName?: string;
   service: OpenClawPluginService;
   source: string;
+  origin: PluginOrigin;
   rootDir?: string;
 };
 
@@ -287,6 +282,7 @@ export type PluginRecord = {
   musicGenerationProviderIds: string[];
   webFetchProviderIds: string[];
   webSearchProviderIds: string[];
+  migrationProviderIds: string[];
   contextEngineIds?: string[];
   memoryEmbeddingProviderIds: string[];
   agentHarnessIds: string[];
@@ -323,7 +319,7 @@ export type PluginRegistry = {
   musicGenerationProviders: PluginMusicGenerationProviderRegistration[];
   webFetchProviders: PluginWebFetchProviderRegistration[];
   webSearchProviders: PluginWebSearchProviderRegistration[];
-  embeddedExtensionFactories: PluginEmbeddedExtensionFactoryRegistration[];
+  migrationProviders: PluginMigrationProviderRegistration[];
   codexAppServerExtensionFactories: PluginCodexAppServerExtensionFactoryRegistration[];
   agentToolResultMiddlewares: PluginAgentToolResultMiddlewareRegistration[];
   memoryEmbeddingProviders: PluginMemoryEmbeddingProviderRegistration[];
@@ -345,6 +341,7 @@ export type PluginRegistry = {
 export type PluginRegistryParams = {
   logger: PluginLogger;
   coreGatewayHandlers?: GatewayRequestHandlers;
+  coreGatewayMethodNames?: readonly string[];
   runtime: PluginRuntime;
   activateGlobalSideEffects?: boolean;
 };

@@ -1,4 +1,3 @@
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type {
   AgentToolResultMiddleware,
@@ -17,6 +16,7 @@ import type {
   OpenClawPluginApi,
   ImageGenerationProviderPlugin,
   MediaUnderstandingProviderPlugin,
+  MigrationProviderPlugin,
   MusicGenerationProviderPlugin,
   OpenClawPluginCliCommandDescriptor,
   OpenClawPluginCliRegistrar,
@@ -43,7 +43,6 @@ export type CapturedPluginRegistration = {
   cliRegistrars: CapturedPluginCliRegistration[];
   cliBackends: CliBackendPlugin[];
   textTransforms: PluginTextTransformRegistration[];
-  embeddedExtensionFactories: ExtensionFactory[];
   codexAppServerExtensionFactories: CodexAppServerExtensionFactory[];
   agentToolResultMiddlewares: PluginAgentToolResultMiddlewareRegistration[];
   speechProviders: SpeechProviderPlugin[];
@@ -55,6 +54,7 @@ export type CapturedPluginRegistration = {
   musicGenerationProviders: MusicGenerationProviderPlugin[];
   webFetchProviders: WebFetchProviderPlugin[];
   webSearchProviders: WebSearchProviderPlugin[];
+  migrationProviders: MigrationProviderPlugin[];
   memoryEmbeddingProviders: MemoryEmbeddingProviderAdapter[];
   tools: AnyAgentTool[];
 };
@@ -68,7 +68,6 @@ export function createCapturedPluginRegistration(params?: {
   const cliRegistrars: CapturedPluginCliRegistration[] = [];
   const cliBackends: CliBackendPlugin[] = [];
   const textTransforms: PluginTextTransformRegistration[] = [];
-  const embeddedExtensionFactories: ExtensionFactory[] = [];
   const codexAppServerExtensionFactories: CodexAppServerExtensionFactory[] = [];
   const agentToolResultMiddlewares: PluginAgentToolResultMiddlewareRegistration[] = [];
   const speechProviders: SpeechProviderPlugin[] = [];
@@ -80,6 +79,7 @@ export function createCapturedPluginRegistration(params?: {
   const musicGenerationProviders: MusicGenerationProviderPlugin[] = [];
   const webFetchProviders: WebFetchProviderPlugin[] = [];
   const webSearchProviders: WebSearchProviderPlugin[] = [];
+  const migrationProviders: MigrationProviderPlugin[] = [];
   const memoryEmbeddingProviders: MemoryEmbeddingProviderAdapter[] = [];
   const tools: AnyAgentTool[] = [];
   const noopLogger = {
@@ -95,7 +95,6 @@ export function createCapturedPluginRegistration(params?: {
     cliRegistrars,
     cliBackends,
     textTransforms,
-    embeddedExtensionFactories,
     codexAppServerExtensionFactories,
     agentToolResultMiddlewares,
     speechProviders,
@@ -107,6 +106,7 @@ export function createCapturedPluginRegistration(params?: {
     musicGenerationProviders,
     webFetchProviders,
     webSearchProviders,
+    migrationProviders,
     memoryEmbeddingProviders,
     tools,
     api: buildPluginApi({
@@ -147,9 +147,6 @@ export function createCapturedPluginRegistration(params?: {
         },
         registerAgentHarness(harness: AgentHarness) {
           agentHarnesses.push(harness);
-        },
-        registerEmbeddedExtensionFactory(factory: ExtensionFactory) {
-          embeddedExtensionFactories.push(factory);
         },
         registerCodexAppServerExtensionFactory(factory: CodexAppServerExtensionFactory) {
           codexAppServerExtensionFactories.push(factory);
@@ -200,6 +197,9 @@ export function createCapturedPluginRegistration(params?: {
         },
         registerWebSearchProvider(provider: WebSearchProviderPlugin) {
           webSearchProviders.push(provider);
+        },
+        registerMigrationProvider(provider: MigrationProviderPlugin) {
+          migrationProviders.push(provider);
         },
         registerMemoryEmbeddingProvider(adapter: MemoryEmbeddingProviderAdapter) {
           memoryEmbeddingProviders.push(adapter);
