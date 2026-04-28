@@ -10,6 +10,7 @@ import {
   continueCall as continueCallWithContext,
   endCall as endCallWithContext,
   initiateCall as initiateCallWithContext,
+  sendDtmf as sendDtmfWithContext,
   speak as speakWithContext,
   speakInitialMessage as speakInitialMessageWithContext,
 } from "./manager/outbound.js";
@@ -223,6 +224,13 @@ export class CallManager {
   }
 
   /**
+   * Send DTMF digits to an active call.
+   */
+  async sendDtmf(callId: CallId, digits: string): Promise<{ success: boolean; error?: string }> {
+    return sendDtmfWithContext(this.getContext(), callId, digits);
+  }
+
+  /**
    * Speak the initial message for a call (called when media stream connects).
    */
   async speakInitialMessage(providerCallId: string): Promise<void> {
@@ -301,6 +309,9 @@ export class CallManager {
     // is actually available; otherwise speak immediately on answered.
     const mode = (call.metadata?.mode as string | undefined) ?? "conversation";
     if (mode === "conversation") {
+      if (this.config.realtime.enabled) {
+        return;
+      }
       const shouldWaitForStreamConnect =
         this.shouldDeferConversationInitialMessageUntilStreamConnect();
       if (shouldWaitForStreamConnect) {

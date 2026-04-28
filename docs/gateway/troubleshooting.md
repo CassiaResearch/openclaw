@@ -57,7 +57,7 @@ Related:
 
 - [/providers/anthropic](/providers/anthropic)
 - [/reference/token-use](/reference/token-use)
-- [/help/faq#why-am-i-seeing-http-429-ratelimiterror-from-anthropic](/help/faq#why-am-i-seeing-http-429-ratelimiterror-from-anthropic)
+- [/help/faq-first-run#why-am-i-seeing-http-429-ratelimiterror-from-anthropic](/help/faq-first-run#why-am-i-seeing-http-429-ratelimiterror-from-anthropic)
 
 ## Local OpenAI-compatible backend passes direct probes but agent runs fail
 
@@ -303,6 +303,7 @@ Common signatures:
 - `.clobbered.*` exists → an external direct edit or startup read was restored.
 - `.rejected.*` exists → an OpenClaw-owned config write failed schema or clobber checks before commit.
 - `Config write rejected:` → the write tried to drop required shape, shrink the file sharply, or persist invalid config.
+- `missing-meta-vs-last-good`, `gateway-mode-missing-vs-last-good`, or `size-drop-vs-last-good:*` → startup treated the current file as clobbered because it lost fields or size compared with the last-known-good backup.
 - `Config last-known-good promotion skipped` → the candidate contained redacted secret placeholders such as `***`.
 
 Fix options:
@@ -475,12 +476,14 @@ Common signatures:
 - `No Chrome tabs found for profile="user"` → the Chrome MCP attach profile has no open local Chrome tabs.
 - `Remote CDP for profile "<name>" is not reachable` → the configured remote CDP endpoint is not reachable from the gateway host.
 - `Browser attachOnly is enabled ... not reachable` or `Browser attachOnly is enabled and CDP websocket ... is not reachable` → attach-only profile has no reachable target, or the HTTP endpoint answered but the CDP WebSocket still could not be opened.
-- `Playwright is not available in this gateway build; '<feature>' is unsupported.` → the current gateway install lacks the full Playwright package; ARIA snapshots and basic page screenshots can still work, but navigation, AI snapshots, CSS-selector element screenshots, and PDF export stay unavailable.
+- `Playwright is not available in this gateway build; '<feature>' is unsupported.` → the current gateway install lacks the bundled browser plugin's `playwright-core` runtime dependency; run `openclaw doctor --fix`, then restart the gateway. ARIA snapshots and basic page screenshots can still work, but navigation, AI snapshots, CSS-selector element screenshots, and PDF export stay unavailable.
 - `fullPage is not supported for element screenshots` → screenshot request mixed `--full-page` with `--ref` or `--element`.
 - `element screenshots are not supported for existing-session profiles; use ref from snapshot.` → Chrome MCP / `existing-session` screenshot calls must use page capture or a snapshot `--ref`, not CSS `--element`.
 - `existing-session file uploads do not support element selectors; use ref/inputRef.` → Chrome MCP upload hooks need snapshot refs, not CSS selectors.
 - `existing-session file uploads currently support one file at a time.` → send one upload per call on Chrome MCP profiles.
 - `existing-session dialog handling does not support timeoutMs.` → dialog hooks on Chrome MCP profiles do not support timeout overrides.
+- `existing-session type does not support timeoutMs overrides.` → omit `timeoutMs` for `act:type` on `profile="user"` / Chrome MCP existing-session profiles, or use a managed/CDP browser profile when a custom timeout is required.
+- `existing-session evaluate does not support timeoutMs overrides.` → omit `timeoutMs` for `act:evaluate` on `profile="user"` / Chrome MCP existing-session profiles, or use a managed/CDP browser profile when a custom timeout is required.
 - `response body is not supported for existing-session profiles yet.` → `responsebody` still requires a managed browser or raw CDP profile.
 - stale viewport / dark-mode / locale / offline overrides on attach-only or remote CDP profiles → run `openclaw browser stop --browser-profile <name>` to close the active control session and release Playwright/CDP emulation state without restarting the whole gateway.
 
@@ -563,3 +566,9 @@ Related:
 - [/gateway/pairing](/gateway/pairing)
 - [/gateway/authentication](/gateway/authentication)
 - [/gateway/background-process](/gateway/background-process)
+
+## Related
+
+- [Gateway runbook](/gateway)
+- [Doctor](/gateway/doctor)
+- [FAQ](/help/faq)
