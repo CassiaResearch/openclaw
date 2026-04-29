@@ -293,7 +293,7 @@ export async function speakInitialMessage(
   const initialMessage = call.metadata?.initialMessage as string | undefined;
   const mode = (call.metadata?.mode as CallMode) ?? "conversation";
 
-  if (mode === "realtime-conversation") {
+  if (mode === "conversation" && ctx.config.realtime.enabled) {
     return;
   }
 
