@@ -121,6 +121,12 @@ const VoiceCallToolSchema = Type.Union([
     to: Type.Optional(Type.String({ description: "Call target" })),
     message: Type.String({ description: "Intro message" }),
     mode: Type.Optional(Type.Union([Type.Literal("notify"), Type.Literal("conversation")])),
+    instructions: Type.Optional(
+      Type.String({
+        description:
+          "Per-call realtime voice instructions. Used to provide context and instructions in the form of a system prompt to the realtime voice provider.",
+      }),
+    ),
   }),
   Type.Object({
     action: Type.Literal("continue_call"),
@@ -494,12 +500,14 @@ export default definePluginEntry({
                 if (!to) {
                   throw new Error("to required");
                 }
+                const instructions = normalizeOptionalString(rawParams.instructions);
                 const result = await rt.manager.initiateCall(to, undefined, {
                   message,
                   mode:
                     rawParams.mode === "notify" || rawParams.mode === "conversation"
                       ? rawParams.mode
                       : undefined,
+                  ...(instructions && { realtimeConfig: { instructions } }),
                 });
                 if (!result.success) {
                   throw new Error(result.error || "initiate failed");
