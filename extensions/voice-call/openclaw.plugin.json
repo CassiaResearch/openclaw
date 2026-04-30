@@ -730,7 +730,9 @@
     "secretInputs": {
       "paths": [
         { "path": "twilio.authToken", "expected": "string" },
-        { "path": "tts.providers.*.apiKey", "expected": "string" }
+        { "path": "tts.providers.*.apiKey", "expected": "string" },
+        { "path": "realtime.providers.*.apiKey", "expected": "string" },
+        { "path": "streaming.providers.*.apiKey", "expected": "string" }
       ]
     }
   }
