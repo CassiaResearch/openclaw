@@ -383,7 +383,6 @@ export async function createVoiceCallRuntime(params: {
       );
       realtimeHandler.registerCallSetupHook(async () => {
         try {
-          log.warn("[voice-call] Prewarming voice call consult agent");
           await prewarmVoiceCallConsultAgent({
             cfg,
             agentRuntime,
