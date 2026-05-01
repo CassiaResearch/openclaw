@@ -14,6 +14,7 @@ import type { CoreAgentDeps, CoreConfig } from "./core-bridge.js";
 import { CallManager } from "./manager.js";
 import type { VoiceCallProvider } from "./providers/base.js";
 import type { TwilioProvider } from "./providers/twilio.js";
+import { prewarmVoiceCallConsultAgent } from "./realtime-consult-prewarm.js";
 import { resolveVoiceResponseModel } from "./response-model.js";
 import type { TelephonyTtsRuntime } from "./telephony-tts.js";
 import { createTelephonyTtsProvider } from "./telephony-tts.js";
@@ -380,6 +381,18 @@ export async function createVoiceCallRuntime(params: {
           });
         },
       );
+      realtimeHandler.registerCallSetupHook(async () => {
+        try {
+          log.warn("[voice-call] Prewarming voice call consult agent");
+          await prewarmVoiceCallConsultAgent({
+            cfg,
+            agentRuntime,
+            agentId: config.agentId ?? "main",
+          });
+        } catch (error) {
+          log.warn(`[voice-call] realtime consult prewarm failed: ${formatErrorMessage(error)}`);
+        }
+      });
     }
     webhookServer.setRealtimeHandler(realtimeHandler);
   }

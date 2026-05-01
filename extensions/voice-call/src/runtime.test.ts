@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   webhookCtorArgs: [] as unknown[][],
   realtimeHandlerCtorArgs: [] as unknown[][],
   realtimeHandlerRegisterToolHandler: vi.fn(),
+  realtimeHandlerRegisterCallSetupHook: vi.fn(),
   realtimeHandlerSetPublicUrl: vi.fn(),
   resolveConfiguredRealtimeVoiceProvider: vi.fn(),
   startTunnel: vi.fn(),
@@ -59,6 +60,7 @@ vi.mock("./webhook/realtime-handler.js", () => ({
       mocks.realtimeHandlerCtorArgs.push(args);
     }
     registerToolHandler = mocks.realtimeHandlerRegisterToolHandler;
+    registerCallSetupHook = mocks.realtimeHandlerRegisterCallSetupHook;
     setPublicUrl = mocks.realtimeHandlerSetPublicUrl;
   },
 }));
@@ -122,6 +124,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     mocks.webhookCtorArgs.length = 0;
     mocks.realtimeHandlerCtorArgs.length = 0;
     mocks.realtimeHandlerRegisterToolHandler.mockReset();
+    mocks.realtimeHandlerRegisterCallSetupHook.mockReset();
     mocks.realtimeHandlerSetPublicUrl.mockReset();
     mocks.resolveConfiguredRealtimeVoiceProvider.mockResolvedValue({
       provider: { id: "openai" },

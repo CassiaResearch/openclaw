@@ -18,6 +18,7 @@ import type { CallRecord, NormalizedEvent } from "../types.js";
 import type { WebhookResponsePayload } from "../webhook.types.js";
 
 export type ToolHandlerFn = (args: unknown, callId: string) => Promise<unknown>;
+export type RealtimeCallSetupHook = () => void | Promise<void>;
 
 const STREAM_TOKEN_TTL_MS = 30_000;
 const DEFAULT_HOST = "localhost:8443";
@@ -68,6 +69,7 @@ type ActiveRealtimeVoiceBridge = RealtimeVoiceBridgeSession;
 export class RealtimeCallHandler {
   private readonly toolHandlers = new Map<string, ToolHandlerFn>();
   private readonly pendingStreamTokens = new Map<string, PendingStreamToken>();
+  private readonly callSetupHooks: RealtimeCallSetupHook[] = [];
   private publicOrigin: string | null = null;
   private publicPathPrefix = "";
 
@@ -198,6 +200,22 @@ export class RealtimeCallHandler {
 
   registerToolHandler(name: string, fn: ToolHandlerFn): void {
     this.toolHandlers.set(name, fn);
+  }
+
+  registerCallSetupHook(hook: RealtimeCallSetupHook): void {
+    this.callSetupHooks.push(hook);
+  }
+
+  private runCallSetupHooks(): void {
+    for (const hook of this.callSetupHooks) {
+      void Promise.resolve()
+        .then(hook)
+        .catch((error: unknown) => {
+          console.warn(
+            `[voice-call] realtime call setup hook failed: ${formatErrorMessage(error)}`,
+          );
+        });
+    }
   }
 
   private issueStreamToken(meta: Omit<PendingStreamToken, "expiry"> = {}): string {
@@ -382,6 +400,8 @@ export class RealtimeCallHandler {
       type: "call.answered",
       ...baseFields,
     });
+
+    this.runCallSetupHooks();
 
     return {
       callId: callRecord.callId,

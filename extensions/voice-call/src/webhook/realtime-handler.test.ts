@@ -337,6 +337,55 @@ describe("RealtimeCallHandler path routing", () => {
   });
 });
 
+describe("RealtimeCallHandler call setup hooks", () => {
+  it("invokes registered call setup hooks once per realtime call", async () => {
+    const createBridge = vi.fn(() => makeBridge());
+    const getCallByProviderCallId = vi.fn(
+      (): CallRecord => ({
+        callId: "call-1",
+        providerCallId: "CA-prewarm",
+        provider: "twilio",
+        direction: "inbound",
+        state: "ringing",
+        from: "+15550001234",
+        to: "+15550009999",
+        startedAt: Date.now(),
+        transcript: [],
+        processedEventIds: [],
+        metadata: {},
+      }),
+    );
+    const handler = makeHandler(undefined, {
+      manager: { getCallByProviderCallId },
+      realtimeProvider: makeRealtimeProvider(createBridge),
+    });
+    const hook = vi.fn(async () => {});
+    handler.registerCallSetupHook(hook);
+    const server = await startRealtimeServer(handler);
+
+    try {
+      const ws = await connectWs(server.url);
+      try {
+        ws.send(
+          JSON.stringify({
+            event: "start",
+            start: { streamSid: "MZ-prewarm", callSid: "CA-prewarm" },
+          }),
+        );
+        await vi.waitFor(() => {
+          expect(hook).toHaveBeenCalledTimes(1);
+        });
+      } finally {
+        if (ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
+          ws.close();
+        }
+      }
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe("RealtimeCallHandler websocket hardening", () => {
   it("rejects oversized pre-start frames before bridge setup", async () => {
     const createBridge = vi.fn(() => makeBridge());
