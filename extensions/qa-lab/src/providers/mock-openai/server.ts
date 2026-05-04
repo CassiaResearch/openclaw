@@ -145,8 +145,14 @@ const QA_THINKING_VISIBILITY_OFF_PROMPT_RE = /qa thinking visibility check off/i
 const QA_THINKING_VISIBILITY_MAX_PROMPT_RE = /qa thinking visibility check max/i;
 const QA_EMPTY_RESPONSE_RECOVERY_PROMPT_RE = /empty response continuation qa check/i;
 const QA_EMPTY_RESPONSE_EXHAUSTION_PROMPT_RE = /empty response exhaustion qa check/i;
-const QA_QUIET_STREAMING_PROMPT_RE = /quiet streaming qa check/i;
+const QA_STREAMING_PROMPT_RE = /(?:partial|quiet) streaming qa check/i;
 const QA_BLOCK_STREAMING_PROMPT_RE = /block streaming qa check/i;
+const QA_TOOL_PROGRESS_ERROR_PROMPT_RE = /tool progress error qa check/i;
+const QA_TOOL_PROGRESS_PROMPT_RE = /tool progress qa check/i;
+const QA_GROUP_VISIBLE_REPLY_TOOL_PROMPT_RE = /qa group visible reply tool check/i;
+const QA_GROUP_MESSAGE_UNAVAILABLE_FALLBACK_PROMPT_RE =
+  /qa group message unavailable fallback check/i;
+const QA_TELEGRAM_CURRENT_SESSION_STATUS_PROMPT_RE = /telegram current session_status qa check/i;
 const QA_SUBAGENT_DIRECT_FALLBACK_PROMPT_RE = /subagent direct fallback qa check/i;
 const QA_SUBAGENT_DIRECT_FALLBACK_WORKER_RE = /subagent direct fallback worker/i;
 const QA_SUBAGENT_DIRECT_FALLBACK_MARKER = "QA-SUBAGENT-DIRECT-FALLBACK-OK";
@@ -530,6 +536,16 @@ function extractLastCapture(text: string, pattern: RegExp) {
   return lastMatch?.[1]?.trim() || null;
 }
 
+function extractLastMatchingUserText(texts: string[], pattern: RegExp) {
+  for (let index = texts.length - 1; index >= 0; index -= 1) {
+    const text = texts[index] ?? "";
+    if (pattern.test(text)) {
+      return text;
+    }
+  }
+  return "";
+}
+
 function extractExactReplyDirective(text: string) {
   const backtickedMatch = extractLastCapture(text, /reply(?: with)? exactly\s+`([^`]+)`/i);
   if (backtickedMatch) {
@@ -547,11 +563,14 @@ function extractFinishExactlyDirective(text: string) {
 }
 
 function extractExactMarkerDirective(text: string) {
-  const backtickedMatch = extractLastCapture(text, /exact marker:\s*`([^`]+)`/i);
+  const backtickedMatch = extractLastCapture(text, /exact marker\b[^:\n]{0,120}:\s*`([^`]+)`/i);
   if (backtickedMatch) {
     return backtickedMatch;
   }
-  return extractLastCapture(text, /exact marker:\s*([^\s`.,;:!?]+(?:-[^\s`.,;:!?]+)*)/i);
+  return extractLastCapture(
+    text,
+    /exact marker\b[^:\n]{0,120}:\s*([^\s`.,;:!?]+(?:-[^\s`.,;:!?]+)*)/i,
+  );
 }
 
 function extractLabeledMarkerDirective(text: string, label: string) {
@@ -640,6 +659,41 @@ function extractToolErrorForNamedCall(params: {
     return error;
   }
   return undefined;
+}
+
+function hasToolErrorOutput(toolJson: Record<string, unknown> | null, toolOutput: string) {
+  if (typeof toolJson?.error === "string" && toolJson.error.trim()) {
+    return true;
+  }
+  if (
+    typeof toolJson?.status === "string" &&
+    /\b(?:error|failed|failure)\b/i.test(toolJson.status)
+  ) {
+    return true;
+  }
+  return /\b(?:error|failed|failure|not found|no such file|enoent)\b/i.test(toolOutput);
+}
+
+function extractSessionStatusSessionKey(
+  toolJson: Record<string, unknown> | null,
+  toolOutput: string,
+) {
+  const details = toolJson?.details;
+  if (details && typeof details === "object") {
+    const sessionKey = (details as { sessionKey?: unknown }).sessionKey;
+    if (typeof sessionKey === "string" && sessionKey.trim()) {
+      return sessionKey.trim();
+    }
+  }
+  const topLevelSessionKey = toolJson?.sessionKey;
+  if (typeof topLevelSessionKey === "string" && topLevelSessionKey.trim()) {
+    return topLevelSessionKey.trim();
+  }
+  const statusLineSessionKey = /(?:^|\n)[^\n]*Session:\s*([^\s•\n]+)/u.exec(toolOutput)?.[1];
+  if (statusLineSessionKey?.trim()) {
+    return statusLineSessionKey.trim();
+  }
+  return /"sessionKey"\s*:\s*"([^"]+)"/.exec(toolOutput)?.[1]?.trim() ?? "";
 }
 
 function isHeartbeatPrompt(text: string) {
@@ -1165,6 +1219,12 @@ async function buildResponsesPayload(
   const hasEmptyResponseRetryInstruction = allInputText.includes(QA_EMPTY_RESPONSE_RETRY_NEEDLE);
   const canCallSessionsSpawn = hasDeclaredTool(body, "sessions_spawn");
   const canCallSessionsYield = hasDeclaredTool(body, "sessions_yield");
+  const buildToolProgressReadEvents = (pattern: RegExp) => {
+    const toolProgressPrompt = extractLastMatchingUserText(extractAllUserTexts(input), pattern);
+    return buildToolCallEventsWithArgs("read", {
+      path: readTargetFromPrompt(toolProgressPrompt || prompt || allInputText),
+    });
+  };
   if (
     allInputText.includes(QA_SUBAGENT_DIRECT_FALLBACK_MARKER) &&
     /Internal task completion event/i.test(allInputText)
@@ -1250,7 +1310,7 @@ async function buildResponsesPayload(
     }
     return buildAssistantEvents("");
   }
-  if (QA_QUIET_STREAMING_PROMPT_RE.test(allInputText) && exactReplyDirective) {
+  if (QA_STREAMING_PROMPT_RE.test(allInputText) && exactReplyDirective) {
     return buildAssistantEvents([
       {
         id: "msg_mock_quiet_stream",
@@ -1259,6 +1319,23 @@ async function buildResponsesPayload(
         text: exactReplyDirective,
       },
     ]);
+  }
+  const toolProgressReplyDirective = exactReplyDirective ?? exactMarkerDirective;
+  if (QA_TOOL_PROGRESS_ERROR_PROMPT_RE.test(allInputText) && toolProgressReplyDirective) {
+    if (!toolOutput) {
+      return buildToolProgressReadEvents(QA_TOOL_PROGRESS_ERROR_PROMPT_RE);
+    }
+    return buildAssistantEvents(
+      hasToolErrorOutput(toolJson, toolOutput)
+        ? toolProgressReplyDirective
+        : "BUG-TOOL-DID-NOT-FAIL",
+    );
+  }
+  if (QA_TOOL_PROGRESS_PROMPT_RE.test(allInputText) && toolProgressReplyDirective) {
+    if (!toolOutput) {
+      return buildToolProgressReadEvents(QA_TOOL_PROGRESS_PROMPT_RE);
+    }
+    return buildAssistantEvents(toolProgressReplyDirective);
   }
   if (
     QA_BLOCK_STREAMING_PROMPT_RE.test(allInputText) &&
@@ -1279,6 +1356,32 @@ async function buildResponsesPayload(
         text: secondExactMarkerDirective,
       },
     ]);
+  }
+  if (QA_GROUP_VISIBLE_REPLY_TOOL_PROMPT_RE.test(allInputText)) {
+    const marker = exactMarkerDirective ?? exactReplyDirective ?? "QA-GROUP-TOOL-OK";
+    if (!toolOutput && hasDeclaredTool(body, "message")) {
+      return buildToolCallEventsWithArgs("message", {
+        action: "send",
+        message: marker,
+      });
+    }
+    return buildAssistantEvents("");
+  }
+  if (QA_GROUP_MESSAGE_UNAVAILABLE_FALLBACK_PROMPT_RE.test(allInputText)) {
+    return buildAssistantEvents(
+      exactMarkerDirective ?? exactReplyDirective ?? "QA-GROUP-FALLBACK-OK",
+    );
+  }
+  if (QA_TELEGRAM_CURRENT_SESSION_STATUS_PROMPT_RE.test(allInputText)) {
+    if (!toolOutput && hasDeclaredTool(body, "session_status")) {
+      return buildToolCallEventsWithArgs("session_status", { sessionKey: "current" });
+    }
+    const sessionKey = extractSessionStatusSessionKey(toolJson, toolOutput);
+    return buildAssistantEvents(
+      sessionKey.includes(":telegram:group:")
+        ? `QA-TELEGRAM-CURRENT-SESSION-OK ${sessionKey}`
+        : `QA-TELEGRAM-CURRENT-SESSION-BAD ${sessionKey || "missing-session-key"}`,
+    );
   }
   if (/\bmarker\b/i.test(allInputText) && exactReplyDirective) {
     return buildAssistantEvents(exactReplyDirective);
@@ -1402,19 +1505,42 @@ async function buildResponsesPayload(
     /silent snack recall check/i.test(allInputText)
   ) {
     if (!toolOutput) {
-      return buildToolCallEventsWithArgs("memory_search", {
+      if (!hasDeclaredTool(body, "memory_recall")) {
+        return buildToolCallEventsWithArgs("memory_search", {
+          query: "QA movie night snack lemon pepper wings blue cheese",
+          maxResults: 3,
+        });
+      }
+      return buildToolCallEventsWithArgs("memory_recall", {
         query: "QA movie night snack lemon pepper wings blue cheese",
-        maxResults: 3,
+        limit: 3,
       });
+    }
+    const memoryText =
+      typeof toolJson?.text === "string"
+        ? toolJson.text
+        : Array.isArray(toolJson?.content)
+          ? toolJson.content
+              .map((item) =>
+                typeof item === "object" && item && "text" in item && typeof item.text === "string"
+                  ? item.text
+                  : "",
+              )
+              .filter(Boolean)
+              .join("\n")
+          : undefined;
+    if (memoryText) {
+      const snackPreference = extractSnackPreference(memoryText);
+      if (snackPreference) {
+        return buildAssistantEvents(`User usually wants ${snackPreference} for QA movie night.`);
+      }
+      return buildAssistantEvents("NONE");
     }
     const results = Array.isArray(toolJson?.results)
       ? (toolJson.results as Array<Record<string, unknown>>)
       : [];
     const first = results[0];
-    if (
-      typeof first?.path === "string" &&
-      (typeof first.startLine === "number" || typeof first.endLine === "number")
-    ) {
+    if (typeof first?.path === "string") {
       const from =
         typeof first.startLine === "number"
           ? Math.max(1, first.startLine)
@@ -1427,12 +1553,9 @@ async function buildResponsesPayload(
         lines: 4,
       });
     }
-    const memorySnippet =
-      typeof toolJson?.text === "string"
-        ? toolJson.text
-        : Array.isArray(toolJson?.results)
-          ? JSON.stringify(toolJson.results)
-          : toolOutput;
+    const memorySnippet = Array.isArray(toolJson?.results)
+      ? JSON.stringify(toolJson.results)
+      : toolOutput;
     const snackPreference = extractSnackPreference(memorySnippet);
     if (snackPreference) {
       return buildAssistantEvents(`User usually wants ${snackPreference} for QA movie night.`);
