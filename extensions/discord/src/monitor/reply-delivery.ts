@@ -1,4 +1,3 @@
-import type { RequestClient } from "@buape/carbon";
 import { resolveAgentAvatar } from "openclaw/plugin-sdk/agent-runtime";
 import type {
   MarkdownTableMode,
@@ -17,7 +16,9 @@ import type { ChunkMode } from "openclaw/plugin-sdk/reply-chunking";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-dispatch-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
+import type { RequestClient } from "../internal/discord.js";
 import { sendMessageDiscord, sendVoiceMessageDiscord } from "../send.js";
+import { sanitizeDiscordFrontChannelReplyPayloads } from "./reply-safety.js";
 
 export type DiscordThreadBindingLookupRecord = {
   accountId: string;
@@ -175,13 +176,17 @@ export async function deliverDiscordReply(params: {
   void params.runtime;
 
   const delivery = resolveDiscordDeliveryOptions(params);
+  const payloads = sanitizeDiscordFrontChannelReplyPayloads(params.replies);
+  if (payloads.length === 0) {
+    return;
+  }
 
   await deliverOutboundPayloads({
     cfg: params.cfg,
     channel: "discord",
     to: delivery.to,
     accountId: params.accountId,
-    payloads: params.replies,
+    payloads,
     replyToId: normalizeOptionalString(params.replyToId),
     replyToMode: delivery.replyToMode,
     formatting: delivery.formatting,

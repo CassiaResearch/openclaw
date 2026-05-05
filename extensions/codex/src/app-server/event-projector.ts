@@ -1,6 +1,4 @@
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, Usage } from "@mariozechner/pi-ai";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
 import {
   classifyAgentHarnessTerminalOutcome,
   embeddedAgentLog,
@@ -13,9 +11,12 @@ import {
   runAgentHarnessAfterCompactionHook,
   runAgentHarnessBeforeCompactionHook,
   TOOL_PROGRESS_OUTPUT_MAX_CHARS,
+  type AgentMessage,
   type EmbeddedRunAttemptParams,
   type EmbeddedRunAttemptResult,
+  type HeartbeatToolResponse,
   type MessagingToolSend,
+  type ToolProgressDetailMode,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { readCodexTurn } from "./protocol-validators.js";
 import {
@@ -26,12 +27,15 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./protocol.js";
+import { readCodexMirroredSessionHistoryMessages } from "./session-history.js";
+import { attachCodexMirrorIdentity } from "./transcript-mirror.js";
 
 export type CodexAppServerToolTelemetry = {
   didSendViaMessagingTool: boolean;
   messagingToolSentTexts: string[];
   messagingToolSentMediaUrls: string[];
   messagingToolSentTargets: MessagingToolSend[];
+  heartbeatToolResponse?: HeartbeatToolResponse;
   toolMediaUrls?: string[];
   toolAudioAsVoice?: boolean;
   successfulCronAdds?: number;
@@ -182,23 +186,47 @@ export class CodexAppServerEventProjector {
       assistantTexts.length > 0
         ? this.createAssistantMessage(assistantTexts.join("\n\n"))
         : undefined;
+    // Each snapshot entry is tagged with a stable mirror identity of the
+    // shape `${turnId}:${kind}`. The mirror's idempotency key is derived
+    // from this identity rather than from snapshot position or content
+    // hash, so:
+    //   - Re-mirror of the same turn (retry) → same identity → no-op.
+    //   - Re-emit of a prior turn's entry into a later turn's snapshot
+    //     (the cross-turn drift mode named in #77012) → original identity
+    //     is preserved → on-disk key still matches → also a no-op.
+    //   - Two distinct turns where the user repeats verbatim content →
+    //     distinct turnIds → distinct identities → both kept.
+    const turnId = this.turnId;
     const messagesSnapshot: AgentMessage[] = [
-      {
-        role: "user",
-        content: this.params.prompt,
-        timestamp: Date.now(),
-      },
+      attachCodexMirrorIdentity(
+        {
+          role: "user",
+          content: this.params.prompt,
+          timestamp: Date.now(),
+        },
+        `${turnId}:prompt`,
+      ),
     ];
     // Codex owns the canonical thread. These mirror records keep enough local
     // context for OpenClaw history, search, and future harness switching.
     if (reasoningText) {
-      messagesSnapshot.push(this.createAssistantMirrorMessage("Codex reasoning", reasoningText));
+      messagesSnapshot.push(
+        attachCodexMirrorIdentity(
+          this.createAssistantMirrorMessage("Codex reasoning", reasoningText),
+          `${turnId}:reasoning`,
+        ),
+      );
     }
     if (planText) {
-      messagesSnapshot.push(this.createAssistantMirrorMessage("Codex plan", planText));
+      messagesSnapshot.push(
+        attachCodexMirrorIdentity(
+          this.createAssistantMirrorMessage("Codex plan", planText),
+          `${turnId}:plan`,
+        ),
+      );
     }
     if (lastAssistant) {
-      messagesSnapshot.push(lastAssistant);
+      messagesSnapshot.push(attachCodexMirrorIdentity(lastAssistant, `${turnId}:assistant`));
     }
     const turnFailed = this.completedTurn?.status === "failed";
     const turnInterrupted = this.completedTurn?.status === "interrupted";
@@ -218,6 +246,7 @@ export class CodexAppServerEventProjector {
       timedOut: false,
       idleTimedOut: false,
       timedOutDuringCompaction: false,
+      timedOutDuringToolExecution: false,
       promptError,
       promptErrorSource: promptError ? this.promptErrorSource || "prompt" : null,
       sessionIdUsed: this.params.sessionId,
@@ -232,6 +261,7 @@ export class CodexAppServerEventProjector {
       messagingToolSentTexts: toolTelemetry.messagingToolSentTexts,
       messagingToolSentMediaUrls: toolTelemetry.messagingToolSentMediaUrls,
       messagingToolSentTargets: toolTelemetry.messagingToolSentTargets,
+      heartbeatToolResponse: toolTelemetry.heartbeatToolResponse,
       toolMediaUrls: toolTelemetry.toolMediaUrls,
       toolAudioAsVoice: toolTelemetry.toolAudioAsVoice,
       successfulCronAdds: toolTelemetry.successfulCronAdds,
@@ -334,7 +364,7 @@ export class CodexAppServerEventProjector {
       this.activeCompactionItemIds.add(itemId);
       await runAgentHarnessBeforeCompactionHook({
         sessionFile: this.params.sessionFile,
-        messages: this.readMirroredSessionMessages(),
+        messages: await this.readMirroredSessionMessages(),
         ctx: {
           runId: this.params.runId,
           agentId: this.params.agentId,
@@ -385,7 +415,7 @@ export class CodexAppServerEventProjector {
       this.completedCompactionCount += 1;
       await runAgentHarnessAfterCompactionHook({
         sessionFile: this.params.sessionFile,
-        messages: this.readMirroredSessionMessages(),
+        messages: await this.readMirroredSessionMessages(),
         compactedCount: -1,
         ctx: {
           runId: this.params.runId,
@@ -610,6 +640,7 @@ export class CodexAppServerEventProjector {
     if (!kind) {
       return;
     }
+    const meta = itemMeta(item, this.toolProgressDetailMode());
     this.emitAgentEvent({
       stream: "item",
       data: {
@@ -619,7 +650,7 @@ export class CodexAppServerEventProjector {
         title: itemTitle(item),
         status: params.phase === "start" ? "running" : itemStatus(item),
         ...(itemName(item) ? { name: itemName(item) } : {}),
-        ...(itemMeta(item) ? { meta: itemMeta(item) } : {}),
+        ...(meta ? { meta } : {}),
       },
     });
   }
@@ -637,7 +668,7 @@ export class CodexAppServerEventProjector {
       return;
     }
     this.toolResultSummaryItemIds.add(itemId);
-    const meta = itemMeta(item);
+    const meta = itemMeta(item, this.toolProgressDetailMode());
     this.emitToolResultMessage({
       itemId,
       text: formatToolSummary(toolName, meta),
@@ -662,7 +693,7 @@ export class CodexAppServerEventProjector {
     }
     this.emitToolResultMessage({
       itemId,
-      text: formatToolOutput(toolName, itemMeta(item), output),
+      text: formatToolOutput(toolName, itemMeta(item, this.toolProgressDetailMode()), output),
       finalOutput: true,
     });
   }
@@ -696,6 +727,10 @@ export class CodexAppServerEventProjector {
       : this.params.verboseLevel === "full";
   }
 
+  private toolProgressDetailMode(): ToolProgressDetailMode {
+    return this.params.toolProgressDetail === "raw" ? "raw" : "explain";
+  }
+
   private recordToolMeta(item: CodexThreadItem | undefined): void {
     if (!item) {
       return;
@@ -704,9 +739,10 @@ export class CodexAppServerEventProjector {
     if (!toolName) {
       return;
     }
+    const meta = itemMeta(item, this.toolProgressDetailMode());
     this.toolMetas.set(item.id, {
       toolName,
-      ...(itemMeta(item) ? { meta: itemMeta(item) } : {}),
+      ...(meta ? { meta } : {}),
     });
   }
 
@@ -760,12 +796,8 @@ export class CodexAppServerEventProjector {
     this.assistantItemOrder.push(itemId);
   }
 
-  private readMirroredSessionMessages(): AgentMessage[] {
-    try {
-      return SessionManager.open(this.params.sessionFile).buildSessionContext().messages;
-    } catch {
-      return [];
-    }
+  private async readMirroredSessionMessages(): Promise<AgentMessage[]> {
+    return (await readCodexMirroredSessionHistoryMessages(this.params.sessionFile)) ?? [];
   }
 
   private createAssistantMessage(text: string): AssistantMessage {
@@ -1047,19 +1079,26 @@ function itemName(item: CodexThreadItem): string | undefined {
   return undefined;
 }
 
-function itemMeta(item: CodexThreadItem): string | undefined {
+function itemMeta(
+  item: CodexThreadItem,
+  detailMode: ToolProgressDetailMode = "explain",
+): string | undefined {
   if (item.type === "commandExecution" && typeof item.command === "string") {
-    return inferToolMetaFromArgs("exec", {
-      command: item.command,
-      cwd: typeof item.cwd === "string" ? item.cwd : undefined,
-    });
+    return inferToolMetaFromArgs(
+      "exec",
+      {
+        command: item.command,
+        cwd: typeof item.cwd === "string" ? item.cwd : undefined,
+      },
+      { detailMode },
+    );
   }
   if (item.type === "webSearch" && typeof item.query === "string") {
     return item.query;
   }
   const toolName = itemName(item);
   if ((item.type === "dynamicToolCall" || item.type === "mcpToolCall") && toolName) {
-    return inferToolMetaFromArgs(toolName, item.arguments);
+    return inferToolMetaFromArgs(toolName, item.arguments, { detailMode });
   }
   return undefined;
 }
